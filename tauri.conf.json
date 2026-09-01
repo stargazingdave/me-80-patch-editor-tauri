@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "me-80-patch-editor",
+  "version": "0.1.0",
+  "identifier": "com.me80patcheditor.app",
+  "build": { "frontendDist": "ui" },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [{
+      "title": "me-80-patch-editor",
+      "width": 1420,
+      "height": 900,
+      "minWidth": 900,
+      "minHeight": 650,
+      "backgroundColor": "#11120f"
+    }],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [],
+    "windows": { "nsis": { "installMode": "currentUser", "displayLanguageSelector": false } }
+  }
+}

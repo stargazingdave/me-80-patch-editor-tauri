@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>me-80-patch-editor</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"><span>ME</span><strong>80</strong></div>
+      <div><h1>me-80-patch-editor</h1><p>Hardware-style editor · local only</p></div>
+    </div>
+    <div class="connection">
+      <span id="status-dot" class="status-dot"></span>
+      <div><strong id="status-label">Checking device…</strong><small id="status-detail">Windows MIDI</small></div>
+      <button id="refresh-ports" class="icon-button" title="Refresh MIDI ports">↻</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="library-panel panel">
+      <div class="panel-heading">
+        <div><span class="eyebrow">Sources</span><h2>Patch library</h2></div>
+        <button id="import-button" class="small-button">Import .tsl</button>
+        <input id="tsl-file" type="file" accept=".tsl,application/json" hidden>
+      </div>
+
+      <button id="read-current" class="live-patch-button">
+        <span class="live-icon">⌁</span>
+        <span><strong>Read current patch</strong><small>Load the pedal’s active buffer</small></span>
+        <span>→</span>
+      </button>
+
+      <div class="library-meta">
+        <span id="library-label">USER + PRESET</span>
+        <div class="library-meta-actions">
+          <small id="backup-date">Loading…</small>
+          <div class="view-switch" role="group" aria-label="Patch library view">
+            <button id="patch-view-list" type="button" aria-label="Show patch names" title="List view" aria-pressed="true">☰</button>
+            <button id="patch-view-banks" type="button" aria-label="Show four-patch banks" title="Bank view" aria-pressed="false">▦</button>
+          </div>
+        </div>
+      </div>
+      <div id="patch-list" class="patch-list"></div>
+    </aside>
+
+    <section class="editor-panel panel">
+      <div id="empty-state" class="empty-state">
+        <div class="empty-glyph">80</div>
+        <h2>Select a patch to begin</h2>
+        <p>Open a backed-up patch, import a Tone Studio liveset, or read directly from the connected ME-80.</p>
+      </div>
+
+      <div id="editor" class="editor hidden">
+        <div class="editor-header">
+          <div>
+            <span id="patch-source" class="eyebrow"></span>
+            <input id="patch-name" class="patch-name" maxlength="16" aria-label="Patch name">
+          </div>
+          <div class="change-counter"><strong id="change-count">0</strong><span>changes</span></div>
+        </div>
+
+        <section class="signal-chain-panel" aria-labelledby="signal-chain-title">
+          <div class="signal-chain-heading">
+            <div><span class="eyebrow">Routing</span><strong id="signal-chain-title">Signal flow</strong></div>
+            <small>Derived from effect types</small>
+          </div>
+          <div class="signal-chain-scroll">
+            <div id="signal-chain-flow" class="signal-chain-flow" aria-label="Current ME-80 signal flow"></div>
+          </div>
+        </section>
+
+        <div class="pedal-surface">
+          <div class="surface-label"><span>BOSS ME-80 SIGNAL CONTROLS</span><small>Direct hardware layout</small></div>
+          <div id="effect-chain" class="effect-chain"></div>
+        </div>
+
+        <section class="noise-strip">
+          <div><strong>NS</strong><small>Noise Suppressor</small></div>
+          <label for="ns-thresh">Threshold</label>
+          <input id="ns-thresh" type="range" min="0" max="50">
+          <output id="ns-value" for="ns-thresh">0</output>
+        </section>
+
+        <details class="raw-inspector">
+          <summary>Raw 71-byte patch data</summary>
+          <code id="raw-data"></code>
+        </details>
+      </div>
+    </section>
+
+    <aside class="action-panel panel">
+      <div class="panel-heading"><div><span class="eyebrow">Hardware</span><h2>Send to pedal</h2></div></div>
+
+      <div class="port-fields">
+        <label>MIDI input<select id="input-port"></select></label>
+        <label>MIDI output<select id="output-port"></select></label>
+      </div>
+
+      <section class="live-card">
+        <div><span class="live-label">LIVE SYNC</span><strong id="live-status">Off</strong></div>
+        <label class="live-toggle"><input id="live-sync" type="checkbox" disabled><span></span></label>
+        <p id="live-description">Choose which patch should become the starting point. Live changes remain temporary until Store is explicitly used.</p>
+        <div id="live-start-actions" class="live-start-actions">
+          <button id="live-from-pedal"><span>ME-80 → APP</span><strong>Use pedal patch</strong><small>Read without changing the pedal</small></button>
+          <button id="live-from-editor" disabled><span>APP → ME-80</span><strong>Send editor patch</strong><small>Load into temporary memory</small></button>
+        </div>
+      </section>
+
+      <section class="action-card audition-card">
+        <span class="action-number">01</span>
+        <h3>Temporary audition</h3>
+        <p>Loads the edited sound into temporary memory. It disappears when another stored patch is recalled.</p>
+        <button id="audition" class="primary-button" disabled>Audition patch</button>
+      </section>
+
+      <section class="action-card store-card">
+        <span class="action-number">02</span>
+        <h3>Store permanently</h3>
+        <p>A fresh recovery capture is saved before one verified write to a user slot.</p>
+        <label class="slot-field">Destination<select id="store-slot"></select></label>
+        <button id="store" class="danger-button" disabled>Store to selected slot</button>
+      </section>
+
+      <section class="activity">
+        <div class="activity-heading"><h3>Activity</h3><button id="clear-log">Clear</button></div>
+        <div id="activity-log" class="activity-log"><p class="muted">No operations yet.</p></div>
+      </section>
+    </aside>
+  </main>
+
+  <dialog id="confirm-dialog">
+    <form method="dialog">
+      <span class="dialog-kicker">Permanent write</span>
+      <h2>Overwrite <strong id="confirm-slot-label"></strong>?</h2>
+      <p>The current destination will be read and saved first. Type the slot name to enable the one-shot write.</p>
+      <label>Type <strong id="confirm-slot-prompt"></strong><input id="confirm-slot-input" autocomplete="off"></label>
+      <div class="dialog-actions"><button value="cancel" class="secondary-button">Cancel</button><button id="confirm-store" value="default" class="danger-button" disabled>Save recovery & write</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/control-mapping.js"></script>
+  <script src="/effect-chain.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
