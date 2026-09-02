@@ -43,6 +43,11 @@
           </div>
         </div>
       </div>
+      <div id="library-loader" class="library-loader hidden" role="status" aria-live="polite">
+        <span class="library-spinner" aria-hidden="true"></span>
+        <strong>Reading patches from ME-80</strong>
+        <small>Scanning all 72 stored slots…</small>
+      </div>
       <div id="patch-list" class="patch-list"></div>
     </aside>
 
@@ -82,6 +87,26 @@
           <label for="ns-thresh">Threshold</label>
           <input id="ns-thresh" type="range" min="0" max="50">
           <output id="ns-value" for="ns-thresh">0</output>
+        </section>
+
+        <section class="ctl-panel" aria-labelledby="ctl-title">
+          <div class="ctl-heading">
+            <div><span class="eyebrow">Foot control</span><strong id="ctl-title">CTL assignment</strong></div>
+            <span id="ctl-summary"></span>
+          </div>
+          <div class="ctl-layout">
+            <fieldset class="ctl-kind"><legend>Action</legend>
+              <label><input type="radio" name="ctl-kind" value="effects"><span>Switch effects</span></label>
+              <label><input type="radio" name="ctl-kind" value="knob"><span>Recall knob value</span></label>
+            </fieldset>
+            <label class="ctl-mode">Behavior<select id="ctl-mode"><option value="1">Toggle</option><option value="0">Momentary</option></select></label>
+          </div>
+          <div id="ctl-effects" class="ctl-effects" aria-label="Effects controlled by CTL"></div>
+          <div id="ctl-knob" class="ctl-knob hidden">
+            <label>Target knob<select id="ctl-knob-target"></select></label>
+            <label>Assigned value<input id="ctl-knob-value" type="range" min="0" max="99"><output id="ctl-knob-output" for="ctl-knob-value">0</output></label>
+          </div>
+          <p class="ctl-help">Stored per patch. Live Sync changes remain temporary until Store is used.</p>
         </section>
 
         <details class="raw-inspector">

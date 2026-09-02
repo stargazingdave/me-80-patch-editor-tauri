@@ -30,6 +30,22 @@ const effectDefinitions = [
   { key: "dly", label: "DELAY", switchField: "dly_sw", typeField: "dly_type", params: ["dly1", "dly2", "dly3"], parameterLabels: ["TIME", "FEEDBACK", "E.LEVEL"], angles: [-139, -112, -85, -57, -29, -1, 27, 55, 83, 111, 139] }
 ];
 
+const ctlEffects = [
+  { key: "comp", label: "COMP / FX1", bit: 0x01 }, { key: "odds", label: "OD / DS", bit: 0x02 },
+  { key: "mod", label: "MOD", bit: 0x04 }, { key: "dly", label: "DELAY", bit: 0x08 },
+  { key: "amp", label: "PREAMP", bit: 0x10 }, { key: "fx2", label: "EQ / FX2", bit: 0x20 },
+  { key: "rev", label: "REVERB", bit: 0x40 }, { key: "pdlfx", label: "PEDAL FX", bit: 0x80 }
+];
+
+const ctlKnobTargets = [
+  ["comp", "comp1", "COMP / FX1 · SUSTAIN / SENS / -1 OCT"], ["comp", "comp2", "COMP / FX1 · ATTACK / TONE / -2 OCT"], ["comp", "comp3", "COMP / FX1 · LEVEL / PEAK / DIRECT"],
+  ["odds", "odds1", "OD / DS · DRIVE"], ["odds", "odds2", "OD / DS · TONE"], ["odds", "odds3", "OD / DS · LEVEL"],
+  ["mod", "mod1", "MOD · RATE / KEY"], ["mod", "mod2", "MOD · DEPTH / HARMONY"], ["mod", "mod3", "MOD · E.LEVEL / RESONANCE"],
+  ["dly", "dly1", "DELAY · TIME"], ["dly", "dly2", "DELAY · FEEDBACK"], ["dly", "dly3", "DELAY · E.LEVEL"],
+  ["amp", "amp1", "PREAMP · GAIN"], ["amp", "amp2", "PREAMP · BASS"], ["amp", "amp3", "PREAMP · MIDDLE"], ["amp", "amp4", "PREAMP · TREBLE"], ["amp", "amp5", "PREAMP · LEVEL"],
+  ["fx2", "fx2_1", "EQ / FX2 · BASS / DRIVE / TIME"], ["fx2", "fx2_2", "EQ / FX2 · MIDDLE / RATE / FB"], ["fx2", "fx2_3", "EQ / FX2 · TREBLE / DEPTH"], ["fx2", "fx2_4", "EQ / FX2 · LEVEL"]
+].map(([effect, field, label], target) => ({ effect, field, label, target }));
+
 function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
 }
@@ -226,10 +242,17 @@ function setLibraryView(view) {
   renderLibrary();
 }
 
-async function loadBackupLibrary() {
+async function loadDeviceLibrary() {
+  $("#backup-date").textContent = "Reading…";
+  $("#library-loader").classList.remove("hidden");
+  $("#patch-list").setAttribute("aria-busy", "true");
   try {
-    const library = await api("/api/library/backup");
-    $("#backup-date").textContent = new Date(library.createdAt).toLocaleDateString();
+    setBusy(true);
+    const library = await api("/api/library/device", {
+      method: "POST",
+      body: JSON.stringify(selectedPorts())
+    });
+    $("#backup-date").textContent = `${library.patches.length} PATCHES`;
     $("#library-label").textContent = "USER + PRESET";
     state.libraryBanked = true;
     state.libraryItems = library.patches.map((patch) => ({
@@ -237,14 +260,19 @@ async function loadBackupLibrary() {
       name: patch.name,
       key: patch.slot,
       onClick: async () => {
-        const result = await api("/api/library/load-backup", { method: "POST", body: JSON.stringify({ slot: patch.slot }) });
+        const result = await api("/api/library/load-device", { method: "POST", body: JSON.stringify({ slot: patch.slot }) });
         return result.patch;
       }
     }));
+    addMidiLogs(library.logs);
     renderLibrary();
   } catch (error) {
     $("#backup-date").textContent = "Unavailable";
     showToast(error.message, true);
+  } finally {
+    $("#library-loader").classList.add("hidden");
+    $("#patch-list").removeAttribute("aria-busy");
+    setBusy(false);
   }
 }
 
@@ -527,6 +555,7 @@ function renderPatch() {
   $("#ns-thresh").value = String(decoded.noiseSuppressorThreshold);
   $("#ns-value").textContent = String(decoded.noiseSuppressorThreshold);
   renderSignalChain(decoded);
+  renderCtl(decoded);
 
   const chain = $("#effect-chain");
   chain.replaceChildren();
@@ -552,6 +581,73 @@ function renderPatch() {
       card.append(parameters);
     }
     chain.append(card);
+  }
+}
+
+function ctlCode(control) {
+  return ((control.targetBytes[0] & 0x0f) << 4) | (control.targetBytes[1] & 0x0f);
+}
+
+function ctlTargetBytes(code) {
+  return { high: (code >> 4) & 0x0f, low: code & 0x0f };
+}
+
+function ctlKnobCurrentValue(decoded, target) {
+  const definition = ctlKnobTargets[target];
+  if (!definition) return 0;
+  const sectionTargets = ctlKnobTargets.filter((item) => item.effect === definition.effect);
+  const index = sectionTargets.findIndex((item) => item.target === target);
+  return decoded.parameters[definition.effect][index];
+}
+
+function renderCtl(decoded) {
+  const control = decoded.control;
+  const effectsMode = control.assignmentType === "effects";
+  const code = ctlCode(control);
+  document.querySelectorAll('input[name="ctl-kind"]').forEach((input) => { input.checked = input.value === control.assignmentType; });
+  $("#ctl-mode").value = String(control.mode);
+  $("#ctl-effects").classList.toggle("hidden", !effectsMode);
+  $("#ctl-knob").classList.toggle("hidden", effectsMode);
+
+  const effects = $("#ctl-effects");
+  effects.replaceChildren();
+  for (const definition of ctlEffects) {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    const text = document.createElement("span");
+    input.type = "checkbox";
+    input.checked = (code & definition.bit) !== 0;
+    input.dataset.bit = String(definition.bit);
+    text.textContent = definition.label;
+    input.addEventListener("change", () => {
+      let mask = 0;
+      effects.querySelectorAll("input:checked").forEach((item) => { mask |= Number(item.dataset.bit); });
+      const target = ctlTargetBytes(mask);
+      editFields([{ field: "ctrl_knob_value", value: 100 }, { field: "ctl_target_h", value: target.high }, { field: "ctl_target_l", value: target.low }]);
+    });
+    label.append(input, text);
+    effects.append(label);
+  }
+
+  const targetSelect = $("#ctl-knob-target");
+  targetSelect.replaceChildren();
+  for (const target of ctlKnobTargets) {
+    const option = document.createElement("option");
+    option.value = String(target.target);
+    option.textContent = target.label;
+    targetSelect.append(option);
+  }
+  const safeTarget = code <= 0x14 ? code : 0;
+  targetSelect.value = String(safeTarget);
+  const value = effectsMode ? ctlKnobCurrentValue(decoded, safeTarget) : control.knobValue;
+  $("#ctl-knob-value").value = String(value);
+  $("#ctl-knob-output").textContent = String(value);
+  const mode = control.mode === 1 ? "Toggle" : "Momentary";
+  if (effectsMode) {
+    const selected = ctlEffects.filter((effect) => (code & effect.bit) !== 0).map((effect) => effect.label);
+    $("#ctl-summary").textContent = `${mode} · ${selected.length ? selected.join(" + ") : "No effects"}`;
+  } else {
+    $("#ctl-summary").textContent = `${mode} · ${ctlKnobTargets[safeTarget].label} → ${control.knobValue}`;
   }
 }
 
@@ -601,7 +697,7 @@ function editReverb(typeIndex, level) {
 
 async function editFields(changes) {
   if (!state.currentPatch) return;
-  if (!Array.isArray(changes) || changes.length < 1 || changes.length > 2) throw new Error("Expected one field or the grouped reverb fields.");
+  if (!Array.isArray(changes) || changes.length < 1 || changes.length > 4) throw new Error("Expected between one and four verified fields.");
   const live = state.live;
   try {
     if (live) {
@@ -889,7 +985,11 @@ function initializeSlots() {
   }
 }
 
-$("#refresh-ports").addEventListener("click", () => { stopLive(); refreshStatus(); });
+$("#refresh-ports").addEventListener("click", async () => {
+  stopLive();
+  await refreshStatus();
+  await loadDeviceLibrary();
+});
 $("#read-current").addEventListener("click", readCurrent);
 $("#import-button").addEventListener("click", () => $("#tsl-file").click());
 $("#patch-view-list").addEventListener("click", () => setLibraryView("list"));
@@ -903,6 +1003,34 @@ $("#patch-name").addEventListener("blur", editName);
 $("#patch-name").addEventListener("keydown", (event) => { if (event.key === "Enter") event.target.blur(); });
 $("#ns-thresh").addEventListener("input", (event) => { $("#ns-value").textContent = event.target.value; });
 $("#ns-thresh").addEventListener("change", (event) => editField("ns_thresh", Number.parseInt(event.target.value, 10)));
+document.querySelectorAll('input[name="ctl-kind"]').forEach((input) => input.addEventListener("change", (event) => {
+  if (!event.target.checked || !state.currentPatch) return;
+  const decoded = state.currentPatch.decoded;
+  const code = ctlCode(decoded.control);
+  if (event.target.value === "effects") {
+    const current = ctlKnobTargets[Math.min(code, 0x14)] || ctlKnobTargets[0];
+    const mask = ctlEffects.find((effect) => effect.key === current.effect)?.bit || 0x01;
+    const target = ctlTargetBytes(mask);
+    editFields([{ field: "ctrl_knob_value", value: 100 }, { field: "ctl_target_h", value: target.high }, { field: "ctl_target_l", value: target.low }]);
+  } else {
+    const firstSelected = ctlEffects.find((effect) => (code & effect.bit) !== 0 && ctlKnobTargets.some((target) => target.effect === effect.key));
+    const targetDefinition = ctlKnobTargets.find((target) => target.effect === firstSelected?.key) || ctlKnobTargets[0];
+    const target = ctlTargetBytes(targetDefinition.target);
+    editFields([{ field: "ctl_target_h", value: target.high }, { field: "ctl_target_l", value: target.low }, { field: "ctrl_knob_value", value: ctlKnobCurrentValue(decoded, targetDefinition.target) }]);
+  }
+}));
+$("#ctl-mode").addEventListener("change", (event) => editField("ctl_mode", Number.parseInt(event.target.value, 10)));
+$("#ctl-knob-target").addEventListener("change", (event) => {
+  if (!state.currentPatch) return;
+  const targetCode = Number.parseInt(event.target.value, 10);
+  const target = ctlTargetBytes(targetCode);
+  const value = state.currentPatch.decoded.control.assignmentType === "knob"
+    ? state.currentPatch.decoded.control.knobValue
+    : ctlKnobCurrentValue(state.currentPatch.decoded, targetCode);
+  editFields([{ field: "ctl_target_h", value: target.high }, { field: "ctl_target_l", value: target.low }, { field: "ctrl_knob_value", value }]);
+});
+$("#ctl-knob-value").addEventListener("input", (event) => { $("#ctl-knob-output").textContent = event.target.value; });
+$("#ctl-knob-value").addEventListener("change", (event) => editField("ctrl_knob_value", Number.parseInt(event.target.value, 10)));
 $("#audition").addEventListener("click", audition);
 $("#live-sync").addEventListener("change", toggleLive);
 $("#live-from-pedal").addEventListener("click", startLiveFromPedal);
@@ -926,4 +1054,7 @@ initializeSlots();
 try { state.libraryView = localStorage.getItem("me80-patch-library-view") === "banks" ? "banks" : "list"; } catch { /* Storage is optional. */ }
 setLibraryView(state.libraryView);
 updateLiveControls();
-Promise.all([refreshStatus(), loadBackupLibrary()]);
+(async () => {
+  await refreshStatus();
+  await loadDeviceLibrary();
+})();

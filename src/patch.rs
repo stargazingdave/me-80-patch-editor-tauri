@@ -193,7 +193,7 @@ pub fn decode(b: &[u8]) -> Result<Value, String> {
         "types": {"comp":b[0x18],"odds":b[0x19],"mod":b[0x1a],"dly":b[0x1b],"amp":b[0x1c],"fx2":b[0x1d],"pdlfx":b[0x1e],"rev":b[0x1f]},
         "typeNames": {"comp":label(&COMP_TYPES,b[0x18]),"odds":label(&ODDS_TYPES,b[0x19]),"mod":label(&MOD_TYPES,b[0x1a]),"dly":label(&DLY_TYPES,b[0x1b]),"amp":label(&AMP_TYPES,b[0x1c]),"fx2":label(&FX2_TYPES,b[0x1d]),"pdlfx":label(&PDLFX_TYPES,b[0x1e]),"rev":label(&REV_TYPES,b[0x1f])},
         "parameters": {"comp":&b[0x20..0x23],"odds":&b[0x23..0x26],"mod":&b[0x26..0x29],"dly":&b[0x29..0x2c],"amp":&b[0x2c..0x31],"fx2":&b[0x31..0x35]},
-        "control": {"targetBytes":&b[0x35..0x37],"knobValue":b[0x37],"mode":b[0x38]},
+        "control": {"targetBytes":&b[0x35..0x37],"knobValue":b[0x37],"mode":b[0x38],"assignmentType":if b[0x37] == 100 {"effects"} else {"knob"}},
         "noiseSuppressorThreshold":b[0x39], "reverbLevel":b[0x3a],
         "bpmBytes":{"modulation":&b[0x3b..0x3d],"delay":&b[0x3d..0x3f]},
         "dummyBytes":[&b[0x3f..0x41],&b[0x41..0x43],&b[0x43..0x45],&b[0x45..0x47]]
@@ -242,7 +242,9 @@ fn safe_range(field: &str) -> Option<(u8, u8)> {
         return Some((0, 99));
     }
     match field {
+        "ctl_target_h" | "ctl_target_l" => Some((0, 15)),
         "ctrl_knob_value" => Some((0, 100)),
+        "ctl_mode" => Some((0, 1)),
         "ns_thresh" => Some((0, 50)),
         "rev" => Some((0, 49)),
         _ => None,

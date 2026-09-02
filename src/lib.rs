@@ -24,6 +24,7 @@ struct PatchSession {
 }
 struct AppState {
     sessions: HashMap<String, PatchSession>,
+    device_library: HashMap<String, Vec<u8>>,
     data_dir: PathBuf,
     busy: bool,
     live_midi: Option<LiveMidi>,
@@ -393,6 +394,8 @@ fn parse_tsl(source: &str) -> Result<(String, Vec<String>, Vec<Vec<u8>>), String
             }
         }
         if data[0x20..=0x34].iter().any(|b| *b > 99)
+            || data[0x35] > 15
+            || data[0x36] > 15
             || data[0x37] > 100
             || data[0x38] > 1
             || data[0x39] > 50
@@ -424,12 +427,23 @@ fn changes(body: &Value) -> Result<Vec<(String, u8)>, String> {
     };
     if let Some(items) = body.get("changes") {
         let list = items.as_array().ok_or("changes must be an array.")?;
-        if list.len() != 2 {
-            return Err("A grouped edit must contain exactly the two reverb fields.".into());
+        if !(2..=4).contains(&list.len()) {
+            return Err("A grouped edit must contain between two and four fields.".into());
         }
         let out = list.iter().map(parse).collect::<Result<Vec<_>, _>>()?;
-        if !(out.iter().any(|x| x.0 == "rev_type") && out.iter().any(|x| x.0 == "rev")) {
-            return Err("Only rev_type and rev may be changed together.".into());
+        let fields = out
+            .iter()
+            .map(|x| x.0.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let reverb = fields.len() == 2 && fields.contains("rev_type") && fields.contains("rev");
+        let ctl = fields.iter().all(|field| {
+            matches!(
+                *field,
+                "ctl_target_h" | "ctl_target_l" | "ctrl_knob_value" | "ctl_mode"
+            )
+        });
+        if !reverb && !ctl {
+            return Err("Grouped edits are limited to reverb or CTL assignment fields.".into());
         }
         Ok(out)
     } else if body.get("field").is_some() {
@@ -448,6 +462,29 @@ fn midi_read(
     let mut s = Session::open(input, output)?;
     let response = s.request(&request, address)?;
     Ok((response.data, s.take_logs()))
+}
+
+fn read_device_library(
+    input: usize,
+    output: usize,
+) -> Result<(Vec<(String, String)>, HashMap<String, Vec<u8>>, Vec<MidiLog>), String> {
+    let mut midi = Session::open(input, output)?;
+    midi.begin_operation();
+    let mut entries = Vec::with_capacity(72);
+    let mut patches = HashMap::with_capacity(72);
+    for prefix in ['U', 'P'] {
+        for bank in 1..=9 {
+            for number in 1..=4 {
+                let label = format!("{prefix}{bank}-{number}");
+                let slot = sysex::slot(&label)?;
+                let response = midi.request(&sysex::stored_rq1(&label)?, slot.address)?;
+                patch::validate(&response.data)?;
+                entries.push((label.clone(), patch::name(&response.data)));
+                patches.insert(label, response.data);
+            }
+        }
+    }
+    Ok((entries, patches, midi.take_logs()))
 }
 
 fn live_session(state: &mut AppState, input: usize, output: usize) -> Result<&mut Session, String> {
@@ -514,11 +551,33 @@ fn audition(data: &[u8], input: usize, output: usize) -> Result<Vec<MidiLog>, St
     Ok(s.take_logs())
 }
 fn live_edit(midi: &mut Session, data: &[u8], fields: &[String]) -> Result<Vec<MidiLog>, String> {
-    if fields.is_empty() || fields.len() > 2 {
-        return Err("Live editing requires one field, or the two grouped reverb fields.".into());
+    if fields.is_empty() || fields.len() > 4 {
+        return Err("Live editing requires between one and four verified fields.".into());
     }
     midi.begin_operation();
-    for (i, field) in fields.iter().enumerate() {
+    let ctl_edit = fields.iter().any(|field| {
+        matches!(
+            field.as_str(),
+            "ctl_target_h" | "ctl_target_l" | "ctrl_knob_value" | "ctl_mode"
+        )
+    });
+    if ctl_edit {
+        // The ME-80 treats the CTL assignment as one four-byte structure. Sending
+        // its members separately exposes transient, invalid assignments that the
+        // unit may reject or normalize before the remaining bytes arrive.
+        midi.send(&sysex::dt1([0x20, 0, 0, 0x35], &data[0x35..0x39])?)?;
+    }
+    let ordinary_fields = fields
+        .iter()
+        .filter(|field| {
+            !matches!(
+                field.as_str(),
+                "ctl_target_h" | "ctl_target_l" | "ctrl_knob_value" | "ctl_mode"
+            )
+        })
+        .collect::<Vec<_>>();
+    let ordinary_count = ordinary_fields.len();
+    for (i, field) in ordinary_fields.into_iter().enumerate() {
         let (address, value) = if field == "name" {
             ([0x20, 0, 0, 0], data[..16].to_vec())
         } else {
@@ -530,7 +589,7 @@ fn live_edit(midi: &mut Session, data: &[u8], fields: &[String]) -> Result<Vec<M
             ([0x20, 0, 0, offset as u8], vec![data[offset]])
         };
         midi.send(&sysex::dt1(address, &value)?)?;
-        if i + 1 < fields.len() {
+        if i + 1 < ordinary_count {
             thread::sleep(Duration::from_millis(75))
         }
     }
@@ -572,18 +631,46 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
         );
     }
     if method == "GET" && path == "/api/library/backup" {
-        let backup = load_backup(latest_backup(&state.data_dir)?)?;
+        let backup = latest_backup(&state.data_dir).and_then(load_backup).ok();
         let mut entries = backup
-            .patches
-            .iter()
-            .map(|(slot, name, _, decoded)| json!({"slot":slot,"name":name,"decoded":decoded}))
-            .collect::<Vec<_>>();
+            .as_ref()
+            .map(|backup| {
+                backup
+                    .patches
+                    .iter()
+                    .map(|(slot, name, _, decoded)| {
+                        json!({"slot":slot,"name":name,"decoded":decoded})
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         entries.extend(
             factory_presets()?
                 .into_iter()
                 .map(|(slot, name, _)| json!({"slot":slot,"name":name})),
         );
-        return Ok(json!({"path":backup.path,"createdAt":backup.created_at,"patches":entries}));
+        return Ok(match backup {
+            Some(backup) => json!({"path":backup.path,"createdAt":backup.created_at,"backupAvailable":true,"patches":entries}),
+            None => json!({"createdAt":null,"backupAvailable":false,"patches":entries}),
+        });
+    }
+    if method == "POST" && path == "/api/library/device" {
+        let (entries, patches, logs) =
+            read_device_library(index(body, "inputIndex")?, index(body, "outputIndex")?)?;
+        state.device_library = patches;
+        return Ok(json!({
+            "patches": entries.into_iter().map(|(slot, name)| json!({"slot":slot,"name":name})).collect::<Vec<_>>(),
+            "logs": logs
+        }));
+    }
+    if method == "POST" && path == "/api/library/load-device" {
+        let slot = sysex::slot(string(body, "slot")?)?;
+        let data = state
+            .device_library
+            .get(&slot.label)
+            .cloned()
+            .ok_or_else(|| format!("{} is not in the current hardware scan. Refresh the patch library.", slot.label))?;
+        return Ok(json!({"patch":add_session(state,format!("ME-80 {}",slot.label),data)?}));
     }
     if method == "POST" && path == "/api/library/load-backup" {
         let slot = sysex::slot(string(body, "slot")?)?;
@@ -797,6 +884,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(Arc::new(Mutex::new(AppState {
             sessions: HashMap::new(),
+            device_library: HashMap::new(),
             data_dir: data_directory(),
             busy: false,
             live_midi: None,
@@ -839,6 +927,41 @@ mod tests {
             data,
         };
         assert!(patch::edit(&patch, &[("amp1".into(), 100)], None).is_err());
-        assert!(patch::edit(&patch, &[("ctl_mode".into(), 1)], None).is_err());
+        assert!(patch::edit(&patch, &[("value_dummy_1_h".into(), 1)], None).is_err());
+    }
+    #[test]
+    fn verified_ctl_edits_are_allowed() {
+        let data = factory_presets().unwrap()[0].2.clone();
+        let patch = Patch {
+            original: data.clone(),
+            data,
+        };
+        let edited = patch::edit(
+            &patch,
+            &[
+                ("ctrl_knob_value".into(), 37),
+                ("ctl_target_h".into(), 1),
+                ("ctl_target_l".into(), 1),
+                ("ctl_mode".into(), 0),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(&edited.data[0x35..=0x38], &[1, 1, 37, 0]);
+        assert!(patch::edit(&patch, &[("ctl_target_h".into(), 16)], None).is_err());
+    }
+    #[test]
+    fn grouped_edits_are_scoped() {
+        assert!(changes(&json!({"changes":[
+            {"field":"ctrl_knob_value","value":100},
+            {"field":"ctl_target_h","value":3},
+            {"field":"ctl_target_l","value":7}
+        ]}))
+        .is_ok());
+        assert!(changes(&json!({"changes":[
+            {"field":"ctl_target_h","value":3},
+            {"field":"amp1","value":20}
+        ]}))
+        .is_err());
     }
 }
