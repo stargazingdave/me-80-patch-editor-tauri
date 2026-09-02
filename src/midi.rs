@@ -75,6 +75,7 @@ pub struct Session {
     output: MidiOutputConnection,
     rx: Receiver<Vec<u8>>,
     pub logs: Vec<MidiLog>,
+    editor_mode: bool,
 }
 
 impl Session {
@@ -116,6 +117,7 @@ impl Session {
             output: output_connection,
             rx,
             logs: Vec::new(),
+            editor_mode: false,
         })
     }
 
@@ -150,6 +152,28 @@ impl Session {
         std::mem::take(&mut self.logs)
     }
 
+    pub fn enable_editor_mode(&mut self) -> Result<(), String> {
+        if !self.editor_mode {
+            self.send(&crate::sysex::editor_mode(true))?;
+            self.editor_mode = true;
+        }
+        Ok(())
+    }
+
+    pub fn drain_dt1(&mut self) -> Result<Vec<Dt1>, String> {
+        let mut events = Vec::new();
+        while let Ok(message) = self.rx.try_recv() {
+            self.record("RX", &message);
+            let Some(parsed) = parse_dt1(&message)? else {
+                continue;
+            };
+            if parsed.device_id == DEVICE_ID && parsed.checksum_valid {
+                events.push(parsed);
+            }
+        }
+        Ok(events)
+    }
+
     pub fn request(&mut self, request: &[u8], address: [u8; 4]) -> Result<Dt1, String> {
         self.send(request)?;
         let start = Instant::now();
@@ -174,15 +198,7 @@ impl Session {
                 ));
             }
             if parsed.address != address {
-                return Err(format!(
-                    "Unexpected response address {}.",
-                    parsed
-                        .address
-                        .iter()
-                        .map(|b| format!("{b:02X}"))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ));
+                continue;
             }
             if !parsed.checksum_valid {
                 return Err("ME-80 response checksum was invalid.".into());
@@ -194,6 +210,16 @@ impl Session {
                 ));
             }
             return Ok(parsed);
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if self.editor_mode {
+            let message = crate::sysex::editor_mode(false);
+            let _ = self.output.send(&message);
+            self.editor_mode = false;
         }
     }
 }

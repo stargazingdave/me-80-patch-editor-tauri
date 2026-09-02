@@ -105,6 +105,10 @@ pub fn temp_rq1() -> Vec<u8> {
     rq1([0x20, 0, 0, 0], [0, 0, 0, PATCH_SIZE as u8])
 }
 
+pub fn editor_mode(enabled: bool) -> Vec<u8> {
+    dt1([0x7f, 0, 0, 1], &[u8::from(enabled)]).expect("editor mode is valid DT1")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +123,16 @@ mod tests {
     fn slots() {
         assert_eq!(slot("U9-4").unwrap().address, [0x20, 0x24, 0, 0]);
         assert_eq!(slot("P1-1").unwrap().address, [0x20, 0x25, 0, 0]);
+    }
+    #[test]
+    fn known_editor_mode_messages() {
+        assert_eq!(
+            editor_mode(true),
+            vec![0xf0, 0x41, 0x10, 0, 0, 0, 1, 0x12, 0x7f, 0, 0, 1, 1, 0x7f, 0xf7]
+        );
+        assert_eq!(
+            editor_mode(false),
+            vec![0xf0, 0x41, 0x10, 0, 0, 0, 1, 0x12, 0x7f, 0, 0, 1, 0, 0, 0xf7]
+        );
     }
 }

@@ -711,7 +711,7 @@ function activateLive(origin) {
   state.liveOrigin = origin;
   state.liveFailures = 0;
   if (state.liveTimer) clearInterval(state.liveTimer);
-  state.liveTimer = setInterval(pollLive, 350);
+  state.liveTimer = setInterval(pollLive, 50);
   updateLiveControls();
   $("#live-status").textContent = normalLiveStatus();
 }
@@ -729,7 +729,7 @@ async function pollLive() {
     if (result.changed) {
       setPatch(result.patch);
       addMidiLogs(result.logs);
-      showToast("Pedal change synchronized.");
+      // Physical controls can emit many values per second; keep synchronization quiet.
     }
   } catch (error) {
     handleLiveFailure(error, "Pedal read was interrupted");

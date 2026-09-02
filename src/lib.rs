@@ -32,6 +32,7 @@ struct LiveMidi {
     input: usize,
     output: usize,
     session: Session,
+    event_checks: u32,
 }
 
 fn data_directory() -> PathBuf {
@@ -446,7 +447,7 @@ fn midi_read(
 ) -> Result<(Vec<u8>, Vec<MidiLog>), String> {
     let mut s = Session::open(input, output)?;
     let response = s.request(&request, address)?;
-    Ok((response.data, s.logs))
+    Ok((response.data, s.take_logs()))
 }
 
 fn live_session(state: &mut AppState, input: usize, output: usize) -> Result<&mut Session, String> {
@@ -456,25 +457,46 @@ fn live_session(state: &mut AppState, input: usize, output: usize) -> Result<&mu
         .map(|live| live.input != input || live.output != output)
         .unwrap_or(true);
     if replace {
+        let mut session = Session::open(input, output)?;
+        session.enable_editor_mode()?;
         state.live_midi = Some(LiveMidi {
             input,
             output,
-            session: Session::open(input, output)?,
+            session,
+            event_checks: 0,
         });
     }
     Ok(&mut state.live_midi.as_mut().unwrap().session)
 }
 
-fn live_read(
+fn live_events(
     state: &mut AppState,
     input: usize,
     output: usize,
-) -> Result<(Vec<u8>, Vec<MidiLog>), String> {
+) -> Result<(Vec<sysex::Dt1>, Option<Vec<u8>>, Vec<MidiLog>), String> {
     let result = {
-        let midi = live_session(state, input, output)?;
-        midi.begin_operation();
-        midi.request(&sysex::temp_rq1(), [0x20, 0, 0, 0])
-            .map(|response| (response.data, midi.take_logs()))
+        let live = state
+            .live_midi
+            .as_mut()
+            .filter(|live| live.input == input && live.output == output);
+        if live.is_none() {
+            let _ = live_session(state, input, output)?;
+        }
+        let live = state.live_midi.as_mut().unwrap();
+        let events = live.session.drain_dt1()?;
+        live.event_checks += 1;
+        let recovery = if live.event_checks >= 40 {
+            live.event_checks = 0;
+            live.session.begin_operation();
+            Some(
+                live.session
+                    .request(&sysex::temp_rq1(), [0x20, 0, 0, 0])?
+                    .data,
+            )
+        } else {
+            None
+        };
+        Ok((events, recovery, live.session.take_logs()))
     };
     if result.is_err() {
         state.live_midi = None;
@@ -489,7 +511,7 @@ fn audition(data: &[u8], input: usize, output: usize) -> Result<Vec<MidiLog>, St
     if !same(&got.data, data) {
         return Err("Temporary readback did not match all 71 requested bytes.".into());
     }
-    Ok(s.logs)
+    Ok(s.take_logs())
 }
 fn live_edit(midi: &mut Session, data: &[u8], fields: &[String]) -> Result<Vec<MidiLog>, String> {
     if fields.is_empty() || fields.len() > 2 {
@@ -662,17 +684,27 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
             index(body, "outputIndex")?,
             string(body, "sessionId")?.to_string(),
         );
-        let (data, logs) = live_read(state, input, output)?;
+        let (events, recovery, logs) = live_events(state, input, output)?;
         let s = state
             .sessions
             .get_mut(&id)
             .ok_or("Patch session was not found. Reload the patch and try again.")?;
+        let mut data = s.patch.data.clone();
+        for event in events {
+            if event.address[0..3] != [0x20, 0, 0] {
+                continue;
+            }
+            let offset = event.address[3] as usize;
+            if offset < PATCH_SIZE && offset + event.data.len() <= PATCH_SIZE {
+                data[offset..offset + event.data.len()].copy_from_slice(&event.data);
+            }
+        }
+        if let Some(full) = recovery {
+            data = full;
+        }
         let changed = s.patch.data != data;
         if changed {
-            s.patch = Patch {
-                original: data.clone(),
-                data,
-            };
+            s.patch.data = data;
             s.source_label = "Live temporary patch".into()
         }
         return Ok(json!({"patch":session_view(&id,s)?,"changed":changed,"logs":logs}));
