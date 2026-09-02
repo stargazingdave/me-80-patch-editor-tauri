@@ -141,6 +141,15 @@ impl Session {
         self.output.send(bytes).map_err(|e| e.to_string())
     }
 
+    pub fn begin_operation(&mut self) {
+        self.logs.clear();
+        while self.rx.try_recv().is_ok() {}
+    }
+
+    pub fn take_logs(&mut self) -> Vec<MidiLog> {
+        std::mem::take(&mut self.logs)
+    }
+
     pub fn request(&mut self, request: &[u8], address: [u8; 4]) -> Result<Dt1, String> {
         self.send(request)?;
         let start = Instant::now();

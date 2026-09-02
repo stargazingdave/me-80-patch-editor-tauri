@@ -26,6 +26,12 @@ struct AppState {
     sessions: HashMap<String, PatchSession>,
     data_dir: PathBuf,
     busy: bool,
+    live_midi: Option<LiveMidi>,
+}
+struct LiveMidi {
+    input: usize,
+    output: usize,
+    session: Session,
 }
 
 fn data_directory() -> PathBuf {
@@ -442,6 +448,39 @@ fn midi_read(
     let response = s.request(&request, address)?;
     Ok((response.data, s.logs))
 }
+
+fn live_session(state: &mut AppState, input: usize, output: usize) -> Result<&mut Session, String> {
+    let replace = state
+        .live_midi
+        .as_ref()
+        .map(|live| live.input != input || live.output != output)
+        .unwrap_or(true);
+    if replace {
+        state.live_midi = Some(LiveMidi {
+            input,
+            output,
+            session: Session::open(input, output)?,
+        });
+    }
+    Ok(&mut state.live_midi.as_mut().unwrap().session)
+}
+
+fn live_read(
+    state: &mut AppState,
+    input: usize,
+    output: usize,
+) -> Result<(Vec<u8>, Vec<MidiLog>), String> {
+    let result = {
+        let midi = live_session(state, input, output)?;
+        midi.begin_operation();
+        midi.request(&sysex::temp_rq1(), [0x20, 0, 0, 0])
+            .map(|response| (response.data, midi.take_logs()))
+    };
+    if result.is_err() {
+        state.live_midi = None;
+    }
+    result
+}
 fn audition(data: &[u8], input: usize, output: usize) -> Result<Vec<MidiLog>, String> {
     let mut s = Session::open(input, output)?;
     s.send(&sysex::dt1([0x20, 0, 0, 0], data)?)?;
@@ -452,16 +491,11 @@ fn audition(data: &[u8], input: usize, output: usize) -> Result<Vec<MidiLog>, St
     }
     Ok(s.logs)
 }
-fn live_edit(
-    data: &[u8],
-    fields: &[String],
-    input: usize,
-    output: usize,
-) -> Result<Vec<MidiLog>, String> {
+fn live_edit(midi: &mut Session, data: &[u8], fields: &[String]) -> Result<Vec<MidiLog>, String> {
     if fields.is_empty() || fields.len() > 2 {
         return Err("Live editing requires one field, or the two grouped reverb fields.".into());
     }
-    let mut s = Session::open(input, output)?;
+    midi.begin_operation();
     for (i, field) in fields.iter().enumerate() {
         let (address, value) = if field == "name" {
             ([0x20, 0, 0, 0], data[..16].to_vec())
@@ -473,17 +507,17 @@ fn live_edit(
                 .ok_or_else(|| format!("Field {field} is not eligible for live editing."))?;
             ([0x20, 0, 0, offset as u8], vec![data[offset]])
         };
-        s.send(&sysex::dt1(address, &value)?)?;
+        midi.send(&sysex::dt1(address, &value)?)?;
         if i + 1 < fields.len() {
             thread::sleep(Duration::from_millis(75))
         }
     }
     thread::sleep(Duration::from_millis(100));
-    let got = s.request(&sysex::temp_rq1(), [0x20, 0, 0, 0])?;
+    let got = midi.request(&sysex::temp_rq1(), [0x20, 0, 0, 0])?;
     if !same(&got.data, data) {
         return Err("Live-edit readback did not match the complete 71-byte patch.".into());
     }
-    Ok(s.logs)
+    Ok(midi.take_logs())
 }
 
 fn recovery_path(
@@ -557,7 +591,12 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
         }
         return Ok(json!({"liveSetName":live,"warnings":warnings,"patches":views}));
     }
+    if method == "POST" && path == "/api/device/live-stop" {
+        state.live_midi = None;
+        return Ok(json!({"ok":true}));
+    }
     if method == "POST" && path == "/api/device/read-current" {
+        state.live_midi = None;
         let (input, output) = (index(body, "inputIndex")?, index(body, "outputIndex")?);
         let (data, logs) = midi_read(input, output, [0x20, 0, 0, 0], sysex::temp_rq1())?;
         let view = add_session(state, "Live temporary patch".into(), data)?;
@@ -602,7 +641,14 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
         } else {
             edits.iter().map(|x| x.0.clone()).collect()
         };
-        let logs = live_edit(&candidate.data, &fields, input, output)?;
+        let logs_result = {
+            let midi = live_session(state, input, output)?;
+            live_edit(midi, &candidate.data, &fields)
+        };
+        if logs_result.is_err() {
+            state.live_midi = None;
+        }
+        let logs = logs_result?;
         let s = state.sessions.get_mut(&id).unwrap();
         s.patch = candidate;
         return Ok(json!({"patch":session_view(&id,s)?,"logs":logs}));
@@ -616,7 +662,7 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
             index(body, "outputIndex")?,
             string(body, "sessionId")?.to_string(),
         );
-        let (data, logs) = midi_read(input, output, [0x20, 0, 0, 0], sysex::temp_rq1())?;
+        let (data, logs) = live_read(state, input, output)?;
         let s = state
             .sessions
             .get_mut(&id)
@@ -632,6 +678,7 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
         return Ok(json!({"patch":session_view(&id,s)?,"changed":changed,"logs":logs}));
     }
     if method == "POST" && path == "/api/device/audition" {
+        state.live_midi = None;
         if body.get("confirm") != Some(&json!("AUDITION")) {
             return Err("Temporary audition confirmation is missing.".into());
         }
@@ -650,6 +697,7 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
         return Ok(json!({"ok":true,"logs":audition(&data,input,output)?}));
     }
     if method == "POST" && path == "/api/device/store" {
+        state.live_midi = None;
         let slot = sysex::slot(string(body, "slot")?)?;
         if !slot.user {
             return Err("Writes are restricted to user slots U1-1 through U9-4.".into());
@@ -719,6 +767,7 @@ pub fn run() {
             sessions: HashMap::new(),
             data_dir: data_directory(),
             busy: false,
+            live_midi: None,
         })))
         .invoke_handler(tauri::generate_handler![api])
         .run(tauri::generate_context!())

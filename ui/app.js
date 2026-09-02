@@ -693,6 +693,9 @@ function handleLiveFailure(error, context) {
 }
 
 function stopLive(status = "Off") {
+  if (state.live) {
+    api("/api/device/live-stop", { method: "POST", body: "{}" }).catch(() => {});
+  }
   state.live = false;
   state.liveOrigin = null;
   state.livePolling = false;
@@ -708,7 +711,7 @@ function activateLive(origin) {
   state.liveOrigin = origin;
   state.liveFailures = 0;
   if (state.liveTimer) clearInterval(state.liveTimer);
-  state.liveTimer = setInterval(pollLive, 1000);
+  state.liveTimer = setInterval(pollLive, 350);
   updateLiveControls();
   $("#live-status").textContent = normalLiveStatus();
 }
