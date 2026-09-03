@@ -311,6 +311,141 @@ fn factory_presets() -> Result<Vec<(String, String, Vec<u8>)>, String> {
         .collect())
 }
 
+fn local_library_dirs(data_dir: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let root = data_dir.join("library");
+    let patches = root.join("patches");
+    let sets = root.join("live-sets");
+    fs::create_dir_all(&patches).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&sets).map_err(|e| e.to_string())?;
+    Ok((patches, sets))
+}
+
+fn valid_local_id(value: &str) -> Result<&str, String> {
+    if !value.is_empty()
+        && value.len() <= 80
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        Ok(value)
+    } else {
+        Err("Local library ID is invalid.".into())
+    }
+}
+
+fn local_path(data_dir: &Path, kind: &str, id: &str) -> Result<PathBuf, String> {
+    let id = valid_local_id(id)?;
+    let (patches, sets) = local_library_dirs(data_dir)?;
+    match kind {
+        "patch" => Ok(patches.join(format!("{id}.me80.json"))),
+        "liveSet" => Ok(sets.join(format!("{id}.tsl"))),
+        _ => Err("Local library kind must be patch or liveSet.".into()),
+    }
+}
+
+fn write_json_safely(path: &Path, value: &Value) -> Result<(), String> {
+    let parent = path.parent().ok_or("Local library path has no parent.")?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let temp = parent.join(format!(".{}.{}.tmp", path.file_name().unwrap().to_string_lossy(), Uuid::new_v4()));
+    fs::write(&temp, format!("{}\n", serde_json::to_string_pretty(value).unwrap()))
+        .map_err(|e| e.to_string())?;
+    let backup = path.with_extension("replace-backup");
+    if path.exists() {
+        fs::rename(path, &backup).map_err(|e| e.to_string())?;
+    }
+    if let Err(error) = fs::rename(&temp, path) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, path);
+        }
+        let _ = fs::remove_file(&temp);
+        return Err(error.to_string());
+    }
+    if backup.exists() {
+        fs::remove_file(backup).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn local_patch_value(id: &str, name: &str, data: &[u8]) -> Value {
+    json!({
+        "schema":"me80-local-patch-v1",
+        "id":id,
+        "name":name,
+        "device":"ME-80",
+        "dataDecimal":data,
+        "updatedAt":Utc::now().to_rfc3339()
+    })
+}
+
+fn read_local_patch(path: &Path) -> Result<(String, String, Vec<u8>), String> {
+    let root: Value = serde_json::from_str(&fs::read_to_string(path).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("{} is invalid JSON: {e}", path.display()))?;
+    if root.get("schema") != Some(&json!("me80-local-patch-v1"))
+        || root.get("device") != Some(&json!("ME-80"))
+    {
+        return Err(format!("{} is not a local ME-80 patch.", path.display()));
+    }
+    let id = valid_local_id(root.get("id").and_then(Value::as_str).ok_or("Local patch ID is missing.")?)?.to_string();
+    let name = root.get("name").and_then(Value::as_str).ok_or("Local patch name is missing.")?.to_string();
+    let data = bytes(root.get("dataDecimal").ok_or("Local patch data is missing.")?, "dataDecimal")?;
+    patch::validate(&data)?;
+    Ok((id, name, data))
+}
+
+fn read_live_set(path: &Path) -> Result<Value, String> {
+    let root: Value = serde_json::from_str(&fs::read_to_string(path).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("{} is not valid TSL JSON: {e}", path.display()))?;
+    if root.get("device") != Some(&json!("ME-80")) || root.get("version") != Some(&json!("1.0.0")) {
+        return Err(format!("{} is not an ME-80 TSL 1.0.0 file.", path.display()));
+    }
+    root.pointer("/liveSetData/name").and_then(Value::as_str).ok_or("Live Set name is missing.")?;
+    root.get("patchList").and_then(Value::as_array).ok_or("Live Set patchList is missing.")?;
+    Ok(root)
+}
+
+fn local_library(data_dir: &Path) -> Result<Value, String> {
+    let (patch_dir, set_dir) = local_library_dirs(data_dir)?;
+    let mut patches = Vec::new();
+    let mut live_sets = Vec::new();
+    let mut warnings = Vec::new();
+    for entry in fs::read_dir(patch_dir).map_err(|e| e.to_string())?.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("json") { continue; }
+        match read_local_patch(&path) {
+            Ok((id, name, _)) => patches.push(json!({"id":id,"name":name})),
+            Err(error) => warnings.push(error),
+        }
+    }
+    for entry in fs::read_dir(set_dir).map_err(|e| e.to_string())?.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("tsl") { continue; }
+        let id = path.file_stem().and_then(|x| x.to_str()).unwrap_or_default();
+        if valid_local_id(id).is_err() { warnings.push(format!("Ignored unsafe filename {}.", path.display())); continue; }
+        match read_live_set(&path) {
+            Ok(root) => {
+                let name = root.pointer("/liveSetData/name").and_then(Value::as_str).unwrap();
+                let mut items = Vec::new();
+                for (index, item) in root.get("patchList").and_then(Value::as_array).unwrap().iter().enumerate() {
+                    let parsed = item
+                        .get("params")
+                        .and_then(Value::as_object)
+                        .ok_or_else(|| "Patch params are missing.".to_string())
+                        .and_then(patch::from_tsl_params);
+                    match parsed {
+                        Ok(data) => items.push(json!({"index":index,"name":patch::name(&data)})),
+                        Err(error) => warnings.push(format!("{} patch {}: {error}", path.display(), index + 1)),
+                    }
+                }
+                live_sets.push(json!({"id":id,"name":name,"patches":items}));
+            }
+            Err(error) => warnings.push(error),
+        }
+    }
+    patches.sort_by_key(|v| v.get("name").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase());
+    live_sets.sort_by_key(|v| v.get("name").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase());
+    Ok(json!({"patches":patches,"liveSets":live_sets,"warnings":warnings,"path":data_dir.join("library")}))
+}
+
 fn parse_tsl(source: &str) -> Result<(String, Vec<String>, Vec<Vec<u8>>), String> {
     if source.len() > 5 * 1024 * 1024 {
         return Err("TSL file is too large.".into());
@@ -453,22 +588,19 @@ fn changes(body: &Value) -> Result<Vec<(String, u8)>, String> {
     }
 }
 
-fn midi_read(
-    input: usize,
-    output: usize,
+fn read_patch(
+    midi: &mut Session,
     address: [u8; 4],
     request: Vec<u8>,
 ) -> Result<(Vec<u8>, Vec<MidiLog>), String> {
-    let mut s = Session::open(input, output)?;
-    let response = s.request(&request, address)?;
-    Ok((response.data, s.take_logs()))
+    midi.begin_operation();
+    let response = midi.request(&request, address)?;
+    Ok((response.data, midi.take_logs()))
 }
 
 fn read_device_library(
-    input: usize,
-    output: usize,
+    midi: &mut Session,
 ) -> Result<(Vec<(String, String)>, HashMap<String, Vec<u8>>, Vec<MidiLog>), String> {
-    let mut midi = Session::open(input, output)?;
     midi.begin_operation();
     let mut entries = Vec::with_capacity(72);
     let mut patches = HashMap::with_capacity(72);
@@ -494,6 +626,9 @@ fn live_session(state: &mut AppState, input: usize, output: usize) -> Result<&mu
         .map(|live| live.input != input || live.output != output)
         .unwrap_or(true);
     if replace {
+        // A MIDI endpoint can only have one owner. Release a stale live session
+        // before opening its replacement rather than briefly opening both.
+        state.live_midi = None;
         let mut session = Session::open(input, output)?;
         session.enable_editor_mode()?;
         state.live_midi = Some(LiveMidi {
@@ -504,6 +639,45 @@ fn live_session(state: &mut AppState, input: usize, output: usize) -> Result<&mu
         });
     }
     Ok(&mut state.live_midi.as_mut().unwrap().session)
+}
+
+fn live_operation<T>(
+    state: &mut AppState,
+    input: usize,
+    output: usize,
+    operation: impl FnOnce(&mut Session) -> Result<T, String>,
+) -> Result<T, String> {
+    let midi = live_session(state, input, output)?;
+    // A failed request is retried on this same connection by the UI. Do not cycle
+    // editor mode merely because a response timed out or could not be parsed.
+    operation(midi)
+}
+
+fn device_operation<T>(
+    state: &mut AppState,
+    input: usize,
+    output: usize,
+    operation: impl FnOnce(&mut Session) -> Result<T, String>,
+) -> Result<T, String> {
+    // A standalone command can race with a queued UI stop. If the live connection
+    // is still present, reuse it instead of ever opening the same endpoint twice.
+    let reuse_live = state
+        .live_midi
+        .as_ref()
+        .is_some_and(|live| live.input == input && live.output == output);
+    if reuse_live {
+        let result = operation(&mut state.live_midi.as_mut().unwrap().session);
+        if result.is_ok() {
+            let live = state.live_midi.as_mut().unwrap();
+            live.event_checks = 0;
+        }
+        return result;
+    }
+    if state.live_midi.is_some() {
+        state.live_midi = None;
+    }
+    let mut midi = Session::open(input, output)?;
+    operation(&mut midi)
 }
 
 fn live_events(
@@ -535,21 +709,19 @@ fn live_events(
         };
         Ok((events, recovery, live.session.take_logs()))
     };
-    if result.is_err() {
-        state.live_midi = None;
-    }
     result
 }
-fn audition(data: &[u8], input: usize, output: usize) -> Result<Vec<MidiLog>, String> {
-    let mut s = Session::open(input, output)?;
-    s.send(&sysex::dt1([0x20, 0, 0, 0], data)?)?;
+fn load_temporary_patch(midi: &mut Session, data: &[u8]) -> Result<Vec<MidiLog>, String> {
+    midi.begin_operation();
+    midi.send(&sysex::dt1([0x20, 0, 0, 0], data)?)?;
     thread::sleep(Duration::from_millis(500));
-    let got = s.request(&sysex::temp_rq1(), [0x20, 0, 0, 0])?;
+    let got = midi.request(&sysex::temp_rq1(), [0x20, 0, 0, 0])?;
     if !same(&got.data, data) {
         return Err("Temporary readback did not match all 71 requested bytes.".into());
     }
-    Ok(s.take_logs())
+    Ok(midi.take_logs())
 }
+
 fn live_edit(midi: &mut Session, data: &[u8], fields: &[String]) -> Result<Vec<MidiLog>, String> {
     if fields.is_empty() || fields.len() > 4 {
         return Err("Live editing requires between one and four verified fields.".into());
@@ -578,16 +750,12 @@ fn live_edit(midi: &mut Session, data: &[u8], fields: &[String]) -> Result<Vec<M
         .collect::<Vec<_>>();
     let ordinary_count = ordinary_fields.len();
     for (i, field) in ordinary_fields.into_iter().enumerate() {
-        let (address, value) = if field == "name" {
-            ([0x20, 0, 0, 0], data[..16].to_vec())
-        } else {
-            let offset = patch::FIELDS
-                .iter()
-                .position(|f| f == field)
-                .filter(|o| *o >= 16)
-                .ok_or_else(|| format!("Field {field} is not eligible for live editing."))?;
-            ([0x20, 0, 0, offset as u8], vec![data[offset]])
-        };
+        let offset = patch::FIELDS
+            .iter()
+            .position(|f| f == field)
+            .filter(|o| *o >= 16)
+            .ok_or_else(|| format!("Field {field} is not eligible for live editing."))?;
+        let (address, value) = ([0x20, 0, 0, offset as u8], vec![data[offset]]);
         midi.send(&sysex::dt1(address, &value)?)?;
         if i + 1 < ordinary_count {
             thread::sleep(Duration::from_millis(75))
@@ -619,6 +787,60 @@ fn recovery_path(
     )
     .map_err(|e| e.to_string())?;
     Ok(path.display().to_string())
+}
+
+fn store_patch(
+    midi: &mut Session,
+    data_dir: &Path,
+    slot: &sysex::Slot,
+    data: &[u8],
+) -> Result<(Vec<MidiLog>, String), String> {
+    midi.begin_operation();
+    let request = sysex::stored_rq1(&slot.label)?;
+    let original = midi.request(&request, slot.address)?;
+    let raw = {
+        let mut bytes = vec![0xf0, 0x41, original.device_id, 0, 0, 0, 1, 0x12];
+        bytes.extend(original.address);
+        bytes.extend(&original.data);
+        bytes.push(original.received_checksum);
+        bytes.push(0xf7);
+        bytes
+    };
+    let recovery = recovery_path(data_dir, &slot.label, &request, &original, &raw)?;
+    midi.send(&sysex::dt1(slot.address, data)?)?;
+    thread::sleep(Duration::from_millis(500));
+    let verified = midi.request(&request, slot.address)?;
+    if !same(&verified.data, data) {
+        return Err("Stored readback did not match all 71 requested bytes.".into());
+    }
+    Ok((midi.take_logs(), recovery))
+}
+
+fn cache_stored_patch(
+    device_library: &mut HashMap<String, Vec<u8>>,
+    slot: &sysex::Slot,
+    data: &[u8],
+) -> String {
+    device_library.insert(slot.label.clone(), data.to_vec());
+    patch::name(data)
+}
+
+fn patch_for_store(patch: &Patch, body: &Value) -> Result<Patch, String> {
+    let name = match body.get("name") {
+        None => None,
+        Some(Value::String(name)) => Some(name.trim_end()),
+        Some(_) => return Err("name must be a string.".into()),
+    };
+    patch::edit(patch, &[], name)
+}
+
+fn preserve_staged_name(patch: &Patch, data: &mut [u8]) {
+    // Patch names are permanent-slot metadata: the ME-80 rejects attempts to
+    // edit them in temporary memory. Keep a local rename from being undone by
+    // the periodic live recovery read until Store writes it to a user slot.
+    if patch.original[..16] != patch.data[..16] {
+        data[..16].copy_from_slice(&patch.data[..16]);
+    }
 }
 
 fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result<Value, String> {
@@ -655,8 +877,9 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
         });
     }
     if method == "POST" && path == "/api/library/device" {
+        let (input, output) = (index(body, "inputIndex")?, index(body, "outputIndex")?);
         let (entries, patches, logs) =
-            read_device_library(index(body, "inputIndex")?, index(body, "outputIndex")?)?;
+            device_operation(state, input, output, read_device_library)?;
         state.device_library = patches;
         return Ok(json!({
             "patches": entries.into_iter().map(|(slot, name)| json!({"slot":slot,"name":name})).collect::<Vec<_>>(),
@@ -691,6 +914,143 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
             .ok_or_else(|| format!("Latest backup does not contain {}.", slot.label))?;
         return Ok(json!({"patch":add_session(state,format!("Backup {}",slot.label),source.2)?}));
     }
+    if method == "GET" && path == "/api/local/list" {
+        return local_library(&state.data_dir);
+    }
+    if method == "POST" && path == "/api/local/save-patch" {
+        let session_id = string(body, "sessionId")?;
+        let data = state.sessions.get(session_id).ok_or("Patch session was not found.")?.patch.data.clone();
+        let id = body.get("id").and_then(Value::as_str).map(valid_local_id).transpose()?.map(str::to_string).unwrap_or_else(|| Uuid::new_v4().to_string());
+        let name = body
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|x| !x.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| patch::name(&data));
+        let path = local_path(&state.data_dir, "patch", &id)?;
+        write_json_safely(&path, &local_patch_value(&id, &name, &data))?;
+        return Ok(json!({"ok":true,"id":id,"path":path}));
+    }
+    if method == "POST" && path == "/api/local/import-tsl" {
+        let source = string(body, "source")?;
+        let (name, warnings, _) = parse_tsl(source)?;
+        let mut root: Value = serde_json::from_str(source).map_err(|e| e.to_string())?;
+        let id = Uuid::new_v4().to_string();
+        root.as_object_mut().unwrap().insert("me80PatchEditorId".into(), json!(id));
+        let path = local_path(&state.data_dir, "liveSet", &id)?;
+        write_json_safely(&path, &root)?;
+        return Ok(json!({"ok":true,"id":id,"name":name,"warnings":warnings,"path":path}));
+    }
+    if method == "POST" && path == "/api/local/create-set" {
+        let name = string(body, "name")?.trim();
+        let id = Uuid::new_v4().to_string();
+        let root = json!({"device":"ME-80","version":"1.0.0","liveSetData":{"name":name},"patchList":[],"me80PatchEditorId":id});
+        let path = local_path(&state.data_dir, "liveSet", &id)?;
+        write_json_safely(&path, &root)?;
+        return Ok(json!({"ok":true,"id":id,"path":path}));
+    }
+    if method == "POST" && path == "/api/local/load" {
+        let kind = string(body, "kind")?;
+        let id = string(body, "id")?;
+        let (label, data) = if kind == "patch" {
+            let (_, name, data) = read_local_patch(&local_path(&state.data_dir, kind, id)?)?;
+            (format!("Local patch · {name}"), data)
+        } else {
+            let root = read_live_set(&local_path(&state.data_dir, kind, id)?)?;
+            let item_index = index(body, "index")?;
+            let item = root.get("patchList").and_then(Value::as_array).and_then(|x| x.get(item_index)).ok_or("Live Set patch index is invalid.")?;
+            let data = patch::from_tsl_params(item.get("params").and_then(Value::as_object).ok_or("Live Set patch params are missing.")?)?;
+            let set_name = root.pointer("/liveSetData/name").and_then(Value::as_str).unwrap();
+            (format!("{set_name} · {}", item_index + 1), data)
+        };
+        return Ok(json!({"patch":add_session(state,label,data)?}));
+    }
+    if method == "POST" && path == "/api/local/add-to-set" {
+        let set_id = string(body, "setId")?;
+        let session_id = string(body, "sessionId")?;
+        let data = state.sessions.get(session_id).ok_or("Patch session was not found.")?.patch.data.clone();
+        let path = local_path(&state.data_dir, "liveSet", set_id)?;
+        let mut root = read_live_set(&path)?;
+        root.get_mut("patchList").and_then(Value::as_array_mut).unwrap().push(json!({"params":patch::to_tsl_params(&data)?}));
+        write_json_safely(&path, &root)?;
+        return Ok(json!({"ok":true}));
+    }
+    if method == "POST" && path == "/api/local/save-live-patch" {
+        let set_id = string(body, "setId")?;
+        let item_index = index(body, "index")?;
+        let session_id = string(body, "sessionId")?;
+        let data = state.sessions.get(session_id).ok_or("Patch session was not found.")?.patch.data.clone();
+        let path = local_path(&state.data_dir, "liveSet", set_id)?;
+        let mut root = read_live_set(&path)?;
+        let item = root.get_mut("patchList").and_then(Value::as_array_mut).and_then(|x| x.get_mut(item_index)).ok_or("Live Set patch index is invalid.")?;
+        item.as_object_mut().ok_or("Live Set patch entry is invalid.")?.insert("params".into(), json!(patch::to_tsl_params(&data)?));
+        write_json_safely(&path, &root)?;
+        return Ok(json!({"ok":true}));
+    }
+    if method == "POST" && path == "/api/local/rename" {
+        let kind = string(body, "kind")?;
+        let id = string(body, "id")?;
+        let name = string(body, "name")?.trim();
+        let path = local_path(&state.data_dir, kind, id)?;
+        if kind == "patch" {
+            let (_, _, data) = read_local_patch(&path)?;
+            let p = Patch { original:data.clone(), data };
+            let renamed = patch::edit(&p, &[], Some(name))?;
+            write_json_safely(&path, &local_patch_value(id, name, &renamed.data))?;
+        } else {
+            let mut root = read_live_set(&path)?;
+            root.pointer_mut("/liveSetData/name").ok_or("Live Set name is missing.")?.clone_from(&json!(name));
+            write_json_safely(&path, &root)?;
+        }
+        return Ok(json!({"ok":true}));
+    }
+    if method == "POST" && path == "/api/local/remove-live-patch" {
+        let id = string(body, "id")?;
+        let item_index = index(body, "index")?;
+        let path = local_path(&state.data_dir, "liveSet", id)?;
+        let mut root = read_live_set(&path)?;
+        let list = root.get_mut("patchList").and_then(Value::as_array_mut).unwrap();
+        if item_index >= list.len() { return Err("Live Set patch index is invalid.".into()); }
+        list.remove(item_index);
+        write_json_safely(&path, &root)?;
+        return Ok(json!({"ok":true}));
+    }
+    if method == "POST" && path == "/api/local/move-live-patch" {
+        let id = string(body, "id")?;
+        let from = index(body, "from")?;
+        let to = index(body, "to")?;
+        let path = local_path(&state.data_dir, "liveSet", id)?;
+        let mut root = read_live_set(&path)?;
+        let list = root.get_mut("patchList").and_then(Value::as_array_mut).unwrap();
+        if from >= list.len() || to >= list.len() { return Err("Live Set patch index is invalid.".into()); }
+        let item = list.remove(from);
+        list.insert(to, item);
+        write_json_safely(&path, &root)?;
+        return Ok(json!({"ok":true}));
+    }
+    if method == "POST" && path == "/api/local/delete" {
+        let path = local_path(&state.data_dir, string(body, "kind")?, string(body, "id")?)?;
+        fs::remove_file(&path).map_err(|e| format!("Could not delete {}: {e}", path.display()))?;
+        return Ok(json!({"ok":true}));
+    }
+    if method == "POST" && path == "/api/local/duplicate" {
+        let kind = string(body, "kind")?;
+        let source_id = string(body, "id")?;
+        let id = Uuid::new_v4().to_string();
+        if kind == "patch" {
+            let (_, old_name, data) = read_local_patch(&local_path(&state.data_dir, kind, source_id)?)?;
+            let name = format!("{} COPY", old_name).chars().take(16).collect::<String>();
+            write_json_safely(&local_path(&state.data_dir, kind, &id)?, &local_patch_value(&id, &name, &data))?;
+        } else {
+            let mut root = read_live_set(&local_path(&state.data_dir, kind, source_id)?)?;
+            let old_name = root.pointer("/liveSetData/name").and_then(Value::as_str).unwrap();
+            let name = format!("{old_name} Copy");
+            root.pointer_mut("/liveSetData/name").unwrap().clone_from(&json!(name));
+            root.as_object_mut().unwrap().insert("me80PatchEditorId".into(), json!(id));
+            write_json_safely(&local_path(&state.data_dir, kind, &id)?, &root)?;
+        }
+        return Ok(json!({"ok":true,"id":id}));
+    }
     if method == "POST" && path == "/api/library/import-tsl" {
         let source = string(body, "source")?;
         let (live, warnings, items) = parse_tsl(source)?;
@@ -705,9 +1065,10 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
         return Ok(json!({"ok":true}));
     }
     if method == "POST" && path == "/api/device/read-current" {
-        state.live_midi = None;
         let (input, output) = (index(body, "inputIndex")?, index(body, "outputIndex")?);
-        let (data, logs) = midi_read(input, output, [0x20, 0, 0, 0], sysex::temp_rq1())?;
+        let (data, logs) = device_operation(state, input, output, |midi| {
+            read_patch(midi, [0x20, 0, 0, 0], sysex::temp_rq1())
+        })?;
         let view = add_session(state, "Live temporary patch".into(), data)?;
         return Ok(json!({"patch":view,"logs":logs}));
     }
@@ -750,14 +1111,15 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
         } else {
             edits.iter().map(|x| x.0.clone()).collect()
         };
-        let logs_result = {
-            let midi = live_session(state, input, output)?;
-            live_edit(midi, &candidate.data, &fields)
+        let logs = if new_name.is_some() {
+            // Names cannot be changed in ME-80 temporary memory. Stage the
+            // candidate locally; Store will include it in the verified write.
+            Vec::new()
+        } else {
+            live_operation(state, input, output, |midi| {
+                live_edit(midi, &candidate.data, &fields)
+            })?
         };
-        if logs_result.is_err() {
-            state.live_midi = None;
-        }
-        let logs = logs_result?;
         let s = state.sessions.get_mut(&id).unwrap();
         s.patch = candidate;
         return Ok(json!({"patch":session_view(&id,s)?,"logs":logs}));
@@ -789,6 +1151,7 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
         if let Some(full) = recovery {
             data = full;
         }
+        preserve_staged_name(&s.patch, &mut data);
         let changed = s.patch.data != data;
         if changed {
             s.patch.data = data;
@@ -796,8 +1159,33 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
         }
         return Ok(json!({"patch":session_view(&id,s)?,"changed":changed,"logs":logs}));
     }
+    if method == "POST" && path == "/api/device/live-load" {
+        if body.get("confirm") != Some(&json!("LIVE_SYNC")) {
+            return Err("Live Sync confirmation is missing.".into());
+        }
+        let (input, output, id) = (
+            index(body, "inputIndex")?,
+            index(body, "outputIndex")?,
+            string(body, "sessionId")?,
+        );
+        let data = state
+            .sessions
+            .get(id)
+            .ok_or("Patch session was not found. Reload the patch and try again.")?
+            .patch
+            .data
+            .clone();
+        // Reuse the editor-mode session so a patch choice cannot cycle editor mode
+        // off and on while the pedal is processing the temporary-patch write.
+        let logs = live_operation(state, input, output, |midi| {
+            load_temporary_patch(midi, &data)
+        })?;
+        if let Some(live) = state.live_midi.as_mut() {
+            live.event_checks = 0;
+        }
+        return Ok(json!({"ok":true,"logs":logs}));
+    }
     if method == "POST" && path == "/api/device/audition" {
-        state.live_midi = None;
         if body.get("confirm") != Some(&json!("AUDITION")) {
             return Err("Temporary audition confirmation is missing.".into());
         }
@@ -813,10 +1201,15 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
             .patch
             .data
             .clone();
-        return Ok(json!({"ok":true,"logs":audition(&data,input,output)?}));
+        let logs = device_operation(state, input, output, |midi| {
+            load_temporary_patch(midi, &data)
+        })?;
+        return Ok(json!({"ok":true,"logs":logs}));
     }
-    if method == "POST" && path == "/api/device/store" {
-        state.live_midi = None;
+    if method == "POST" && path == "/api/device/live-store" {
+        if body.get("syncConfirm") != Some(&json!("LIVE_SYNC")) {
+            return Err("Live Sync confirmation is missing.".into());
+        }
         let slot = sysex::slot(string(body, "slot")?)?;
         if !slot.user {
             return Err("Writes are restricted to user slots U1-1 through U9-4.".into());
@@ -832,32 +1225,72 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
             index(body, "outputIndex")?,
             string(body, "sessionId")?,
         );
-        let data = state
+        let current = state
             .sessions
             .get(id)
             .ok_or("Patch session was not found. Reload the patch and try again.")?
             .patch
-            .data
             .clone();
-        let request = sysex::stored_rq1(&slot.label)?;
-        let mut midi = Session::open(input, output)?;
-        let original = midi.request(&request, slot.address)?;
-        let raw = {
-            let mut v = vec![0xf0, 0x41, original.device_id, 0, 0, 0, 1, 0x12];
-            v.extend(original.address);
-            v.extend(&original.data);
-            v.push(original.received_checksum);
-            v.push(0xf7);
-            v
-        };
-        let recovery = recovery_path(&state.data_dir, &slot.label, &request, &original, &raw)?;
-        midi.send(&sysex::dt1(slot.address, &data)?)?;
-        thread::sleep(Duration::from_millis(500));
-        let verified = midi.request(&request, slot.address)?;
-        if !same(&verified.data, &data) {
-            return Err("Stored readback did not match all 71 requested bytes.".into());
+        // The title input commits on blur. Include its current value in this
+        // transaction so a Store click can never race that separate edit request.
+        let candidate = patch_for_store(&current, body)?;
+        let data = candidate.data.clone();
+        let data_dir = state.data_dir.clone();
+        // Store through the same editor-mode connection used by Live Sync. Closing
+        // it before the write is the same mode transition that broke patch loading.
+        let (logs, recovery) = live_operation(state, input, output, |midi| {
+            store_patch(midi, &data_dir, &slot, &data)
+        })?;
+        if let Some(live) = state.live_midi.as_mut() {
+            live.event_checks = 0;
         }
-        return Ok(json!({"ok":true,"logs":midi.logs,"recoveryPath":recovery}));
+        let patch_view = {
+            let session = state.sessions.get_mut(id).unwrap();
+            session.patch = candidate;
+            session_view(id, session)?
+        };
+        let name = cache_stored_patch(&mut state.device_library, &slot, &data);
+        return Ok(
+            json!({"ok":true,"slot":slot.label,"name":name,"patch":patch_view,"logs":logs,"recoveryPath":recovery}),
+        );
+    }
+    if method == "POST" && path == "/api/device/store" {
+        let slot = sysex::slot(string(body, "slot")?)?;
+        if !slot.user {
+            return Err("Writes are restricted to user slots U1-1 through U9-4.".into());
+        }
+        if body.get("confirm").and_then(Value::as_str) != Some(slot.label.as_str()) {
+            return Err(format!(
+                "Type {} exactly to confirm this overwrite.",
+                slot.label
+            ));
+        }
+        let (input, output, id) = (
+            index(body, "inputIndex")?,
+            index(body, "outputIndex")?,
+            string(body, "sessionId")?,
+        );
+        let current = state
+            .sessions
+            .get(id)
+            .ok_or("Patch session was not found. Reload the patch and try again.")?
+            .patch
+            .clone();
+        let candidate = patch_for_store(&current, body)?;
+        let data = candidate.data.clone();
+        let data_dir = state.data_dir.clone();
+        let (logs, recovery) = device_operation(state, input, output, |midi| {
+            store_patch(midi, &data_dir, &slot, &data)
+        })?;
+        let patch_view = {
+            let session = state.sessions.get_mut(id).unwrap();
+            session.patch = candidate;
+            session_view(id, session)?
+        };
+        let name = cache_stored_patch(&mut state.device_library, &slot, &data);
+        return Ok(
+            json!({"ok":true,"slot":slot.label,"name":name,"patch":patch_view,"logs":logs,"recoveryPath":recovery}),
+        );
     }
     Err("API route not found.".into())
 }
@@ -949,6 +1382,60 @@ mod tests {
         .unwrap();
         assert_eq!(&edited.data[0x35..=0x38], &[1, 1, 37, 0]);
         assert!(patch::edit(&patch, &[("ctl_target_h".into(), 16)], None).is_err());
+    }
+    #[test]
+    fn tsl_params_round_trip_all_patch_bytes() {
+        let data = factory_presets().unwrap()[0].2.clone();
+        let params = patch::to_tsl_params(&data).unwrap();
+        assert_eq!(patch::from_tsl_params(&params).unwrap(), data);
+    }
+
+    #[test]
+    fn local_library_round_trip() {
+        let root = std::env::temp_dir().join(format!("me80-library-test-{}", Uuid::new_v4()));
+        let data = factory_presets().unwrap()[0].2.clone();
+        let id = Uuid::new_v4().to_string();
+        let patch_path = local_path(&root, "patch", &id).unwrap();
+        write_json_safely(&patch_path, &local_patch_value(&id, "ROCK LEAD", &data)).unwrap();
+        let listing = local_library(&root).unwrap();
+        assert_eq!(listing.pointer("/patches/0/id").and_then(Value::as_str), Some(id.as_str()));
+        assert_eq!(read_local_patch(&patch_path).unwrap().2, data);
+        fs::remove_dir_all(&root).unwrap();
+    }
+    #[test]
+    fn successful_store_replaces_cached_device_patch() {
+        let presets = factory_presets().unwrap();
+        let slot = sysex::slot("U9-4").unwrap();
+        let mut cache = HashMap::from([(slot.label.clone(), presets[1].2.clone())]);
+        let name = cache_stored_patch(&mut cache, &slot, &presets[0].2);
+        assert_eq!(name, "ROCK LEAD");
+        assert_eq!(cache.get("U9-4"), Some(&presets[0].2));
+    }
+    #[test]
+    fn store_uses_the_name_submitted_with_the_write() {
+        let data = factory_presets().unwrap()[0].2.clone();
+        let patch = Patch {
+            original: data.clone(),
+            data,
+        };
+        let candidate = patch_for_store(&patch, &json!({"name":"paranoid phaser"})).unwrap();
+        assert_eq!(patch::name(&candidate.data), "paranoid phaser");
+        assert_eq!(patch::name(&patch.data), "ROCK LEAD");
+        assert_eq!(candidate.original, patch.original);
+    }
+    #[test]
+    fn live_recovery_does_not_discard_a_staged_name() {
+        let data = factory_presets().unwrap()[0].2.clone();
+        let original = Patch {
+            original: data.clone(),
+            data,
+        };
+        let renamed = patch::edit(&original, &[], Some("Quarter Organ")).unwrap();
+        let mut recovery = original.data.clone();
+        recovery[0x2c] = 12;
+        preserve_staged_name(&renamed, &mut recovery);
+        assert_eq!(patch::name(&recovery), "Quarter Organ");
+        assert_eq!(recovery[0x2c], 12);
     }
     #[test]
     fn grouped_edits_are_scoped() {

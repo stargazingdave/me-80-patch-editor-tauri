@@ -33,6 +33,16 @@
         <span>→</span>
       </button>
 
+      <div class="library-source-switch" role="tablist" aria-label="Patch source">
+        <button id="source-device" role="tab" aria-selected="true">ME-80</button>
+        <button id="source-local" role="tab" aria-selected="false">Local library</button>
+      </div>
+      <div id="local-actions" class="local-actions hidden">
+        <button id="save-local-patch" title="Save the editor's current patch locally">Save patch</button>
+        <button id="new-live-set">New set</button>
+        <button id="reload-local" title="Reload files from the library folder">↻</button>
+      </div>
+
       <div class="library-meta">
         <span id="library-label">USER + PRESET</span>
         <div class="library-meta-actions">

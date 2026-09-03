@@ -330,3 +330,19 @@ pub fn from_tsl_params(params: &Map<String, Value>) -> Result<Vec<u8>, String> {
         })
         .collect()
 }
+
+pub fn to_tsl_params(data: &[u8]) -> Result<Map<String, Value>, String> {
+    validate(data)?;
+    Ok(FIELDS
+        .iter()
+        .zip(data)
+        .map(|(field, value)| {
+            let text = if matches!(*field, "ctl_target_h" | "ctl_target_l") {
+                format!("{value:02X}")
+            } else {
+                value.to_string()
+            };
+            ((*field).to_string(), Value::String(text))
+        })
+        .collect())
+}

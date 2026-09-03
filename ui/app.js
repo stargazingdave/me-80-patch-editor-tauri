@@ -8,12 +8,19 @@ const state = {
   live: false,
   liveOrigin: null,
   liveTimer: null,
+  liveClosing: null,
   livePolling: false,
   liveFailures: 0,
   libraryItems: [],
+  deviceLibraryItems: [],
+  localLibrary: { patches: [], liveSets: [], warnings: [] },
+  librarySource: "device",
+  currentLocalSource: null,
   libraryBanked: true,
   libraryView: "list",
-  activeLibraryKey: null
+  activeLibraryKey: null,
+  storeDraft: null,
+  pendingNameEdit: null
 };
 const $ = (selector) => document.querySelector(selector);
 const controlMapping = Me80ControlMapping;
@@ -96,6 +103,9 @@ function updateLiveControls() {
   $("#live-sync").disabled = state.busy || !state.live;
   $("#live-from-pedal").disabled = state.busy || state.live;
   $("#live-from-editor").disabled = state.busy || state.live || !state.currentPatch;
+  $("#input-port").disabled = state.busy || state.live;
+  $("#output-port").disabled = state.busy || state.live;
+  $("#refresh-ports").disabled = state.busy || state.live;
   $("#read-current").classList.toggle("hidden", state.live);
   $("#live-description").textContent = state.live
     ? (state.liveOrigin === "pedal"
@@ -161,9 +171,11 @@ function patchButton(slot, name, onClick, key = slot) {
       const patch = await onClick();
 
       if (wasLive) {
-        const result = await api("/api/device/audition", {
+        // Keep the existing editor-mode connection alive while changing patches.
+        // Ordinary audition deliberately closes that connection first.
+        const result = await api("/api/device/live-load", {
           method: "POST",
-          body: JSON.stringify({ ...selectedPorts(), sessionId: patch.id, confirm: "AUDITION" })
+          body: JSON.stringify({ ...selectedPorts(), sessionId: patch.id, confirm: "LIVE_SYNC" })
         });
         addMidiLogs(result.logs);
         state.liveOrigin = "editor";
@@ -206,6 +218,10 @@ function makeBank(items, label) {
 }
 
 function renderLibrary() {
+  if (state.librarySource === "local") {
+    renderLocalLibrary();
+    return;
+  }
   const list = $("#patch-list");
   list.replaceChildren();
   list.className = `patch-list ${state.libraryView}-view${state.libraryBanked ? " banked" : " unbanked"}`;
@@ -242,6 +258,30 @@ function setLibraryView(view) {
   renderLibrary();
 }
 
+function deviceLibraryItem(patch) {
+  return {
+    slot: patch.slot,
+    name: patch.name,
+    key: patch.slot,
+    onClick: async () => {
+      const result = await api("/api/library/load-device", { method: "POST", body: JSON.stringify({ slot: patch.slot }) });
+      state.currentLocalSource = null;
+      return result.patch;
+    }
+  };
+}
+
+function updateStoredDevicePatch(slot, name) {
+  const item = state.deviceLibraryItems.find((candidate) => candidate.slot === slot);
+  if (item) item.name = name;
+  else state.deviceLibraryItems.push(deviceLibraryItem({ slot, name }));
+  if (state.librarySource === "device") {
+    state.libraryItems = state.deviceLibraryItems;
+    $("#backup-date").textContent = `${state.deviceLibraryItems.length} PATCHES`;
+    renderLibrary();
+  }
+}
+
 async function loadDeviceLibrary() {
   $("#backup-date").textContent = "Reading…";
   $("#library-loader").classList.remove("hidden");
@@ -255,17 +295,10 @@ async function loadDeviceLibrary() {
     $("#backup-date").textContent = `${library.patches.length} PATCHES`;
     $("#library-label").textContent = "USER + PRESET";
     state.libraryBanked = true;
-    state.libraryItems = library.patches.map((patch) => ({
-      slot: patch.slot,
-      name: patch.name,
-      key: patch.slot,
-      onClick: async () => {
-        const result = await api("/api/library/load-device", { method: "POST", body: JSON.stringify({ slot: patch.slot }) });
-        return result.patch;
-      }
-    }));
+    state.deviceLibraryItems = library.patches.map(deviceLibraryItem);
+    state.libraryItems = state.deviceLibraryItems;
     addMidiLogs(library.logs);
-    renderLibrary();
+    if (state.librarySource === "device") renderLibrary();
   } catch (error) {
     $("#backup-date").textContent = "Unavailable";
     showToast(error.message, true);
@@ -276,8 +309,139 @@ async function loadDeviceLibrary() {
   }
 }
 
+function localActionButton(label, title, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.title = title;
+  button.addEventListener("click", (event) => { event.stopPropagation(); onClick(); });
+  return button;
+}
+
+async function localMutation(path, body, success) {
+  try {
+    setBusy(true);
+    await api(path, { method: "POST", body: JSON.stringify(body) });
+    await loadLocalLibrary();
+    if (success) showToast(success);
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function renderLocalPatchRow(item, source, actions = []) {
+  const row = document.createElement("div");
+  row.className = "local-patch-row";
+  const button = patchButton(source.kind === "patch" ? "PATCH" : String(source.index + 1).padStart(2, "0"), item.name, async () => {
+    const result = await api("/api/local/load", { method: "POST", body: JSON.stringify(source) });
+    state.currentLocalSource = source;
+    return result.patch;
+  }, `local-${source.kind}-${source.id}-${source.index ?? "one"}`);
+  row.append(button);
+  if (actions.length) {
+    const controls = document.createElement("div");
+    controls.className = "local-row-actions";
+    actions.forEach((action) => controls.append(action));
+    row.append(controls);
+  }
+  return row;
+}
+
+function renderLocalLibrary() {
+  const list = $("#patch-list");
+  list.replaceChildren();
+  list.className = "patch-list list-view unbanked";
+  for (const patch of state.localLibrary.patches) {
+    const rename = localActionButton("✎", "Rename patch", async () => {
+      const name = window.prompt("Patch name (1–16 characters)", patch.name);
+      if (name) await localMutation("/api/local/rename", { kind: "patch", id: patch.id, name }, "Patch renamed.");
+    });
+    const remove = localActionButton("×", "Delete patch", async () => {
+      if (window.confirm(`Delete local patch “${patch.name}”?`)) await localMutation("/api/local/delete", { kind: "patch", id: patch.id }, "Patch deleted.");
+    });
+    const duplicate = localActionButton("⧉", "Duplicate patch", () => localMutation("/api/local/duplicate", { kind: "patch", id: patch.id }, "Patch duplicated."));
+    list.append(renderLocalPatchRow(patch, { kind: "patch", id: patch.id }, [duplicate, rename, remove]));
+  }
+  for (const liveSet of state.localLibrary.liveSets) {
+    const section = document.createElement("section");
+    section.className = "local-set";
+    const heading = document.createElement("div");
+    heading.className = "local-set-heading";
+    const title = document.createElement("strong");
+    title.textContent = `${liveSet.name} · ${liveSet.patches.length}`;
+    const controls = document.createElement("div");
+    controls.className = "local-set-actions";
+    controls.append(
+      localActionButton("+", "Add the patch currently open in the editor", async () => {
+        if (!state.currentPatch) return showToast("Open a patch first.", true);
+        await localMutation("/api/local/add-to-set", { setId: liveSet.id, sessionId: state.currentPatch.id }, "Patch added to Live Set.");
+      }),
+      localActionButton("✎", "Rename Live Set", async () => {
+        const name = window.prompt("Live Set name", liveSet.name);
+        if (name) await localMutation("/api/local/rename", { kind: "liveSet", id: liveSet.id, name }, "Live Set renamed.");
+      }),
+      localActionButton("⧉", "Duplicate Live Set", () => localMutation("/api/local/duplicate", { kind: "liveSet", id: liveSet.id }, "Live Set duplicated.")),
+      localActionButton("×", "Delete Live Set", async () => {
+        if (window.confirm(`Delete Live Set “${liveSet.name}”?`)) await localMutation("/api/local/delete", { kind: "liveSet", id: liveSet.id }, "Live Set deleted.");
+      })
+    );
+    heading.append(title, controls);
+    section.append(heading);
+    for (const item of liveSet.patches) {
+      const up = localActionButton("↑", "Move up", async () => {
+        if (item.index > 0) await localMutation("/api/local/move-live-patch", { id: liveSet.id, from: item.index, to: item.index - 1 });
+      });
+      const down = localActionButton("↓", "Move down", async () => {
+        if (item.index + 1 < liveSet.patches.length) await localMutation("/api/local/move-live-patch", { id: liveSet.id, from: item.index, to: item.index + 1 });
+      });
+      const remove = localActionButton("×", "Remove from Live Set", async () => {
+        if (window.confirm(`Remove “${item.name}” from “${liveSet.name}”?`)) await localMutation("/api/local/remove-live-patch", { id: liveSet.id, index: item.index }, "Patch removed from Live Set.");
+      });
+      section.append(renderLocalPatchRow(item, { kind: "liveSet", id: liveSet.id, index: item.index }, [up, down, remove]));
+    }
+    list.append(section);
+  }
+  if (!state.localLibrary.patches.length && !state.localLibrary.liveSets.length) {
+    const empty = document.createElement("p");
+    empty.className = "local-empty";
+    empty.textContent = "No local patches or Live Sets yet. Save the open patch, create a set, or import a .tsl file.";
+    list.append(empty);
+  }
+}
+
+async function loadLocalLibrary() {
+  try {
+    const library = await api("/api/local/list");
+    state.localLibrary = library;
+    $("#library-label").textContent = "LOCAL LIBRARY";
+    $("#backup-date").textContent = `${library.patches.length + library.liveSets.length} FILES`;
+    renderLocalLibrary();
+    if (library.warnings.length) addActivity("LIBRARY", `${library.warnings.length} invalid file(s) ignored.`, true);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function setLibrarySource(source) {
+  state.librarySource = source;
+  $("#source-device").setAttribute("aria-selected", String(source === "device"));
+  $("#source-local").setAttribute("aria-selected", String(source === "local"));
+  $("#local-actions").classList.toggle("hidden", source !== "local");
+  $("#read-current").classList.toggle("hidden", source !== "device");
+  $(".view-switch").classList.toggle("hidden", source === "local");
+  if (source === "local") await loadLocalLibrary();
+  else {
+    state.libraryItems = state.deviceLibraryItems;
+    $("#library-label").textContent = "USER + PRESET";
+    $("#backup-date").textContent = `${state.deviceLibraryItems.length} PATCHES`;
+    renderLibrary();
+  }
+}
+
 function setPatch(patch, { preserveLive = false } = {}) {
-  if (!preserveLive && state.live && state.currentPatch && state.currentPatch.id !== patch.id) stopLive();
+  if (!preserveLive && state.live && state.currentPatch && state.currentPatch.id !== patch.id) void stopLive();
   state.currentPatch = patch;
   $("#empty-state").classList.add("hidden");
   $("#editor").classList.remove("hidden");
@@ -730,31 +894,26 @@ async function editName() {
   if (!state.currentPatch) return;
   const name = $("#patch-name").value.trimEnd();
   if (name === state.currentPatch.decoded.name.text) return;
-  const live = state.live;
   try {
-    if (live) {
-      setBusy(true);
-      $("#live-status").textContent = "Sending name…";
-    }
-    const result = await api(live ? "/api/device/live-edit" : `/api/session/${encodeURIComponent(state.currentPatch.id)}/edit`, {
+    const result = await api(`/api/session/${encodeURIComponent(state.currentPatch.id)}/edit`, {
       method: "POST",
-      body: JSON.stringify(live
-        ? { ...selectedPorts(), sessionId: state.currentPatch.id, name, confirm: "LIVE_SYNC" }
-        : { name })
+      body: JSON.stringify({ name })
     });
-    setPatch(result.patch);
-    if (live) {
-      addMidiLogs(result.logs);
-      state.liveFailures = 0;
-      $("#live-status").textContent = normalLiveStatus();
-    }
+    setPatch(result.patch, { preserveLive: state.live });
+    if (state.live) showToast("Name staged. Store the patch to write it permanently.");
   } catch (error) {
-    if (live) handleLiveFailure(error, "Name was not synchronized");
-    else showToast(error.message, true);
+    showToast(error.message, true);
     renderPatch();
-  } finally {
-    if (live) setBusy(false);
   }
+}
+
+function commitNameEdit() {
+  const operation = editName();
+  state.pendingNameEdit = operation;
+  operation.finally(() => {
+    if (state.pendingNameEdit === operation) state.pendingNameEdit = null;
+  });
+  return operation;
 }
 
 function addActivity(label, detail, error = false) {
@@ -780,7 +939,7 @@ function handleLiveFailure(error, context) {
   state.liveFailures += 1;
   addActivity("SYNC ISSUE", `${context}: ${error.message}`, true);
   if (state.liveFailures >= 3) {
-    stopLive("Stopped after 3 errors");
+    void stopLive("Stopped after 3 errors");
     showToast("Live Sync stopped after three consecutive errors.", true);
     return;
   }
@@ -789,8 +948,12 @@ function handleLiveFailure(error, context) {
 }
 
 function stopLive(status = "Off") {
+  let closing = state.liveClosing || Promise.resolve();
   if (state.live) {
-    api("/api/device/live-stop", { method: "POST", body: "{}" }).catch(() => {});
+    closing = api("/api/device/live-stop", { method: "POST", body: "{}" }).catch((error) => {
+      addActivity("MIDI CLOSE", error.message, true);
+    });
+    state.liveClosing = closing;
   }
   state.live = false;
   state.liveOrigin = null;
@@ -800,6 +963,13 @@ function stopLive(status = "Off") {
   state.liveTimer = null;
   updateLiveControls();
   $("#live-status").textContent = status;
+  return closing.finally(() => {
+    if (state.liveClosing === closing) state.liveClosing = null;
+    if (!state.live) {
+      updateLiveControls();
+      $("#live-status").textContent = status;
+    }
+  });
 }
 
 function activateLive(origin) {
@@ -836,7 +1006,7 @@ async function pollLive() {
 
 async function toggleLive(event) {
   if (!event.target.checked) {
-    stopLive();
+    await stopLive();
     addActivity("LIVE", "Live Sync stopped; no automatic MIDI traffic remains.");
     return;
   }
@@ -845,7 +1015,7 @@ async function toggleLive(event) {
 
 async function startLiveFromPedal() {
   try {
-    stopLive();
+    await stopLive();
     setBusy(true);
     $("#live-status").textContent = "Reading pedal…";
     const result = await api("/api/device/read-current", {
@@ -857,7 +1027,7 @@ async function startLiveFromPedal() {
     activateLive("pedal");
     showToast("Live Sync started from the pedal patch; nothing was loaded onto the pedal.");
   } catch (error) {
-    stopLive("Could not start");
+    await stopLive("Could not start");
     addActivity("ERROR", error.message, true);
     showToast(error.message, true);
   } finally {
@@ -868,7 +1038,7 @@ async function startLiveFromPedal() {
 async function startLiveFromEditor() {
   if (!state.currentPatch) return;
   try {
-    stopLive();
+    await stopLive();
     setBusy(true);
     $("#live-status").textContent = "Loading editor patch…";
     const result = await api("/api/device/audition", {
@@ -879,7 +1049,7 @@ async function startLiveFromEditor() {
     activateLive("editor");
     showToast("Editor patch loaded into temporary memory; Live Sync is on.");
   } catch (error) {
-    stopLive("Could not start");
+    await stopLive("Could not start");
     addActivity("ERROR", error.message, true);
     showToast(error.message, true);
   } finally {
@@ -889,7 +1059,7 @@ async function startLiveFromEditor() {
 
 async function readCurrent() {
   try {
-    stopLive();
+    await stopLive();
     setBusy(true);
     const ports = selectedPorts();
     addActivity("RQ1", "Reading the 71-byte temporary patch…");
@@ -906,17 +1076,26 @@ async function readCurrent() {
 }
 
 async function audition() {
+  const live = state.live;
   try {
     setBusy(true);
-    const result = await api("/api/device/audition", {
+    const result = await api(live ? "/api/device/live-load" : "/api/device/audition", {
       method: "POST",
-      body: JSON.stringify({ ...selectedPorts(), sessionId: state.currentPatch.id, confirm: "AUDITION" })
+      body: JSON.stringify({
+        ...selectedPorts(),
+        sessionId: state.currentPatch.id,
+        confirm: live ? "LIVE_SYNC" : "AUDITION"
+      })
     });
     addMidiLogs(result.logs);
+    if (live) state.liveFailures = 0;
     showToast("Temporary patch loaded and verified 71/71.");
   } catch (error) {
-    showToast(error.message, true);
-    addActivity("ERROR", error.message, true);
+    if (live) handleLiveFailure(error, "Temporary patch was not reloaded");
+    else {
+      showToast(error.message, true);
+      addActivity("ERROR", error.message, true);
+    }
   } finally {
     setBusy(false);
   }
@@ -925,21 +1104,45 @@ async function audition() {
 async function storeConfirmed(event) {
   event.preventDefault();
   const slot = $("#store-slot").value;
+  const live = state.live;
+  const draft = state.storeDraft;
   $("#confirm-dialog").close();
-  stopLive();
+  state.storeDraft = null;
+  if (!draft) return showToast("The patch changed before Store was confirmed. Try again.", true);
   try {
+    // The dialog itself blurs the title. Let that edit finish so its busy-state
+    // cleanup cannot race and re-enable controls during the permanent write.
+    if (state.pendingNameEdit) await state.pendingNameEdit;
     setBusy(true);
     addActivity("STORE", `Reading recovery, then writing ${slot} once…`);
-    const result = await api("/api/device/store", {
+    const result = await api(live ? "/api/device/live-store" : "/api/device/store", {
       method: "POST",
-      body: JSON.stringify({ ...selectedPorts(), sessionId: state.currentPatch.id, slot, confirm: $("#confirm-slot-input").value })
+      body: JSON.stringify({
+        ...selectedPorts(),
+        sessionId: draft.sessionId,
+        name: draft.name,
+        slot,
+        confirm: $("#confirm-slot-input").value,
+        ...(live ? { syncConfirm: "LIVE_SYNC" } : {})
+      })
     });
     addMidiLogs(result.logs);
+    if (result.patch && state.currentPatch?.id === draft.sessionId) {
+      setPatch(result.patch, { preserveLive: live });
+    }
+    updateStoredDevicePatch(result.slot, result.name);
+    if (live) {
+      state.liveFailures = 0;
+      $("#live-status").textContent = normalLiveStatus();
+    }
     addActivity("SAVED", result.recoveryPath);
     showToast(`${slot} stored and verified 71/71.`);
   } catch (error) {
-    showToast(error.message, true);
-    addActivity("ERROR", error.message, true);
+    if (live) handleLiveFailure(error, `Could not store ${slot}`);
+    else {
+      showToast(error.message, true);
+      addActivity("ERROR", error.message, true);
+    }
   } finally {
     setBusy(false);
   }
@@ -949,20 +1152,9 @@ async function importTsl(file) {
   try {
     setBusy(true);
     const source = await file.text();
-    const imported = await api("/api/library/import-tsl", { method: "POST", body: JSON.stringify({ source }) });
-    $("#backup-date").textContent = `${imported.patches.length} imported`;
-    $("#library-label").textContent = imported.liveSetName.toUpperCase();
-    state.activeLibraryButton = null;
-    state.activeLibraryKey = null;
-    state.libraryBanked = false;
-    state.libraryItems = imported.patches.map((patch, index) => ({
-      slot: String(index + 1).padStart(2, "0"),
-      name: patch.decoded.name.text,
-      key: `import-${index}`,
-      onClick: async () => patch
-    }));
-    renderLibrary();
-    showToast(`Imported ${imported.patches.length} validated patches.`);
+    const imported = await api("/api/local/import-tsl", { method: "POST", body: JSON.stringify({ source }) });
+    await setLibrarySource("local");
+    showToast(`Imported “${imported.name}” into the local library.`);
   } catch (error) {
     showToast(error.message, true);
     addActivity("ERROR", error.message, true);
@@ -986,9 +1178,30 @@ function initializeSlots() {
 }
 
 $("#refresh-ports").addEventListener("click", async () => {
-  stopLive();
+  await stopLive();
   await refreshStatus();
   await loadDeviceLibrary();
+});
+$("#source-device").addEventListener("click", () => setLibrarySource("device"));
+$("#source-local").addEventListener("click", () => setLibrarySource("local"));
+$("#reload-local").addEventListener("click", loadLocalLibrary);
+$("#new-live-set").addEventListener("click", async () => {
+  const name = window.prompt("New Live Set name");
+  if (name) await localMutation("/api/local/create-set", { name }, "Live Set created.");
+});
+$("#save-local-patch").addEventListener("click", async () => {
+  if (!state.currentPatch) return showToast("Open a patch first.", true);
+  if (state.currentLocalSource?.kind === "liveSet") {
+    await localMutation("/api/local/save-live-patch", {
+      setId: state.currentLocalSource.id,
+      index: state.currentLocalSource.index,
+      sessionId: state.currentPatch.id
+    }, "Live Set patch saved.");
+    return;
+  }
+  const existing = state.currentLocalSource?.kind === "patch" ? state.currentLocalSource.id : undefined;
+  const name = state.currentPatch.decoded.name.text;
+  await localMutation("/api/local/save-patch", { sessionId: state.currentPatch.id, id: existing, name }, existing ? "Local patch saved." : "Patch added to local library.");
 });
 $("#read-current").addEventListener("click", readCurrent);
 $("#import-button").addEventListener("click", () => $("#tsl-file").click());
@@ -999,7 +1212,7 @@ $("#tsl-file").addEventListener("change", (event) => {
   if (file) importTsl(file);
   event.target.value = "";
 });
-$("#patch-name").addEventListener("blur", editName);
+$("#patch-name").addEventListener("blur", commitNameEdit);
 $("#patch-name").addEventListener("keydown", (event) => { if (event.key === "Enter") event.target.blur(); });
 $("#ns-thresh").addEventListener("input", (event) => { $("#ns-value").textContent = event.target.value; });
 $("#ns-thresh").addEventListener("change", (event) => editField("ns_thresh", Number.parseInt(event.target.value, 10)));
@@ -1035,8 +1248,19 @@ $("#audition").addEventListener("click", audition);
 $("#live-sync").addEventListener("change", toggleLive);
 $("#live-from-pedal").addEventListener("click", startLiveFromPedal);
 $("#live-from-editor").addEventListener("click", startLiveFromEditor);
+// Keep the title focused through mousedown. Otherwise its live blur-save marks
+// the app busy and disables this button before the subsequent click can fire.
+$("#store").addEventListener("mousedown", (event) => event.preventDefault());
 $("#store").addEventListener("click", () => {
   const slot = $("#store-slot").value;
+  const name = $("#patch-name").value.trimEnd();
+  if (!/^[\x20-\x7E]{1,16}$/.test(name)) {
+    showToast("Patch name must contain 1-16 printable ASCII characters.", true);
+    return;
+  }
+  // Capture the visible title together with the session. The blur handler may
+  // still be finishing while the confirmation dialog is open.
+  state.storeDraft = { sessionId: state.currentPatch.id, name };
   $("#confirm-slot-label").textContent = slot;
   $("#confirm-slot-prompt").textContent = slot;
   $("#confirm-slot-input").value = "";

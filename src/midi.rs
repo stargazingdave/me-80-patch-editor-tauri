@@ -154,7 +154,7 @@ impl Session {
 
     pub fn enable_editor_mode(&mut self) -> Result<(), String> {
         if !self.editor_mode {
-            self.send(&crate::sysex::editor_mode(true))?;
+            self.send(&crate::sysex::editor_mode_on())?;
             self.editor_mode = true;
         }
         Ok(())
@@ -214,12 +214,6 @@ impl Session {
     }
 }
 
-impl Drop for Session {
-    fn drop(&mut self) {
-        if self.editor_mode {
-            let message = crate::sysex::editor_mode(false);
-            let _ = self.output.send(&message);
-            self.editor_mode = false;
-        }
-    }
-}
+// Intentionally no Drop message: sending editor-mode value 0 before closing the
+// MIDI connection makes the ME-80 stop monitoring its guitar input until reboot.
+// Releasing the MIDI connections themselves is sufficient cleanup.

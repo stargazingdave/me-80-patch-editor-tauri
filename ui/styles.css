@@ -56,6 +56,21 @@ button { cursor: pointer; }
 .live-patch-button strong { font-size: 12px; }
 .live-patch-button small { color: var(--muted); font-size: 9px; margin-top: 3px; }
 .live-icon { width: 30px; height: 30px; border-radius: 50%; background: var(--acid); color: #191a16; display: grid; place-content: center; font-weight: 800; font-size: 20px; }
+.library-source-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin-top: 12px; padding: 3px; border: 1px solid var(--line); border-radius: 7px; background: #12130f; }
+.library-source-switch button { padding: 7px 4px; border: 0; border-radius: 5px; color: var(--muted); background: transparent; font-size: 9px; }
+.library-source-switch button[aria-selected="true"] { color: #17180f; background: var(--acid); font-weight: 800; }
+.local-actions { display: grid; grid-template-columns: 1fr 1fr 30px; gap: 5px; margin-top: 7px; }
+.local-actions button, .local-row-actions button, .local-set-actions button { min-width: 0; padding: 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: #171812; font-size: 8px; }
+.local-actions button:hover, .local-row-actions button:hover, .local-set-actions button:hover { border-color: var(--acid-dark); }
+.local-set { margin-bottom: 10px; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.local-set-heading { display: flex; align-items: center; gap: 5px; padding: 7px; background: #20211c; }
+.local-set-heading strong { flex: 1; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.local-set-actions, .local-row-actions { display: flex; gap: 3px; }
+.local-set-actions button, .local-row-actions button { width: 22px; height: 22px; padding: 0; }
+.local-patch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-top: 1px solid var(--line-soft); }
+.local-patch-row > .patch-item { min-width: 0; }
+.local-patch-row > .local-row-actions { padding-right: 5px; }
+.local-empty { padding: 20px 8px; color: var(--muted); font-size: 9px; line-height: 1.5; text-align: center; }
 .library-meta { margin: 24px 3px 9px; display: flex; align-items: end; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 9px; letter-spacing: .12em; }
 .library-meta small { letter-spacing: 0; }
 .library-meta-actions { display: flex; align-items: center; gap: 7px; }
