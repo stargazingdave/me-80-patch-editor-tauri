@@ -3,7 +3,12 @@
   "productName": "me-80-patch-editor",
   "version": "0.1.0",
   "identifier": "com.me80patcheditor.app",
-  "build": { "frontendDist": "ui" },
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "dist"
+  },
   "app": {
     "withGlobalTauri": true,
     "windows": [{

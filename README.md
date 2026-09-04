@@ -1,6 +1,6 @@
 # me-80-patch-editor
 
-A native Windows patch editor and librarian for the BOSS ME-80. This version uses Tauri 2, Rust, the Windows WebView2 runtime, and the existing HTML/CSS/JavaScript interface.
+A native Windows patch editor and librarian for the BOSS ME-80. This version uses Tauri 2, Rust, React, TypeScript, Vite, and the Windows WebView2 runtime.
 
 ## End-user requirements
 
@@ -14,12 +14,16 @@ Close DAWs, editors, and MIDI monitors that may already have the ME-80 ports ope
 
 ## Development
 
-Install the current stable Rust toolchain and Tauri CLI, then run:
+Install the current stable Rust toolchain, Tauri CLI, Node.js, and pnpm. Install the frontend dependencies once, then run:
 
 ```powershell
+pnpm install
+pnpm typecheck
 cargo test
 cargo tauri dev
 ```
+
+Vite provides React Fast Refresh while `cargo tauri dev` is running. Frontend-only development can also be started in a browser with `pnpm dev`; native MIDI actions require the Tauri window.
 
 Create the optimized x64 NSIS installer with:
 

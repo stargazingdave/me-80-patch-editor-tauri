@@ -1,7 +1,6 @@
-"use strict";
-
-const assert = require("node:assert/strict");
-const labels = require("./knob-labels.js");
+// @ts-nocheck -- executed directly by Node's TypeScript type stripper.
+import assert from "node:assert/strict";
+import * as labels from "./knob-labels.ts";
 
 assert.equal(labels.activeFunction("comp", 0, 0, "SUSTAIN / SENS / -1 OCT"), "SUSTAIN");
 assert.equal(labels.activeFunction("comp", 6, 0, "SUSTAIN / SENS / -1 OCT"), "FREQ");
