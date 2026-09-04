@@ -12,10 +12,13 @@
       <div class="brand-mark"><span>ME</span><strong>80</strong></div>
       <div><h1>me-80-patch-editor</h1><p>Hardware-style editor · local only</p></div>
     </div>
-    <div class="connection">
-      <span id="status-dot" class="status-dot"></span>
-      <div><strong id="status-label">Checking device…</strong><small id="status-detail">Windows MIDI</small></div>
-      <button id="refresh-ports" class="icon-button" title="Refresh MIDI ports">↻</button>
+    <div class="topbar-actions">
+      <button id="settings-button" class="settings-button" type="button" aria-haspopup="dialog" title="Open settings"><span aria-hidden="true">⚙</span><strong>Settings</strong></button>
+      <div class="connection">
+        <span id="status-dot" class="status-dot"></span>
+        <div><strong id="status-label">Checking device…</strong><small id="status-detail">Windows MIDI</small></div>
+        <button id="refresh-ports" class="icon-button" title="Refresh MIDI ports">↻</button>
+      </div>
     </div>
   </header>
 
@@ -176,9 +179,30 @@
     </form>
   </dialog>
 
+  <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
+    <form method="dialog">
+      <span class="dialog-kicker">Preferences</span>
+      <h2 id="settings-title">Settings</h2>
+      <p>Choose how the parameter labels above the effect knobs are displayed.</p>
+      <fieldset class="settings-options">
+        <legend>Knob labels</legend>
+        <label class="settings-choice">
+          <input type="radio" name="knob-label-mode" value="hardware">
+          <span><strong>Hardware labels</strong><small>Show the full panel legend and highlight the active function.</small></span>
+        </label>
+        <label class="settings-choice">
+          <input type="radio" name="knob-label-mode" value="current">
+          <span><strong>Current function only</strong><small>Show only the parameter controlled by the selected effect type.</small></span>
+        </label>
+      </fieldset>
+      <div class="dialog-actions settings-actions"><button value="close" class="primary-button">Done</button></div>
+    </form>
+  </dialog>
+
   <div id="toast" class="toast" role="status"></div>
   <script src="/control-mapping.js"></script>
   <script src="/effect-chain.js"></script>
+  <script src="/knob-labels.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -20,11 +20,14 @@ const state = {
   libraryView: "list",
   activeLibraryKey: null,
   storeDraft: null,
-  pendingNameEdit: null
+  pendingNameEdit: null,
+  knobLabelMode: "hardware"
 };
 const $ = (selector) => document.querySelector(selector);
 const controlMapping = Me80ControlMapping;
 const effectChainMapping = Me80EffectChain;
+const knobLabels = Me80KnobLabels;
+const KNOB_LABEL_MODE_KEY = "me80-knob-label-mode";
 
 const effectDefinitions = [
   { key: "amp", label: "PREAMP", switchField: "amp_sw", typeField: "amp_type", params: ["amp1", "amp2", "amp3", "amp4", "amp5"], parameterLabels: ["GAIN", "BASS", "MIDDLE", "TREBLE", "LEVEL"], angles: [-137, -103, -69, -35, 0, 35, 69, 103, 137] },
@@ -469,18 +472,43 @@ function makeKnobFace(className) {
   return knob;
 }
 
-function makeContinuousKnob(field, value, labelText, maximum = 99) {
+function renderKnobLabel(label, model) {
+  label.replaceChildren();
+  label.classList.toggle("current-only", state.knobLabelMode === knobLabels.LABEL_MODES.CURRENT);
+  label.classList.toggle("unused", !model.activeFunction);
+  if (!model.segments.length) {
+    label.textContent = "—";
+    return;
+  }
+  model.segments.forEach((segment, index) => {
+    if (index) {
+      const separator = document.createElement("span");
+      separator.className = "knob-label-separator";
+      separator.textContent = " / ";
+      label.append(separator);
+    }
+    const part = document.createElement("span");
+    part.className = `knob-label-part${segment.active ? " active" : ""}`;
+    part.textContent = segment.text;
+    label.append(part);
+  });
+}
+
+function makeContinuousKnob(definition, parameterIndex, field, value, labelText, typeIndex, maximum = 99) {
   const control = document.createElement("label");
   control.className = "continuous-knob-control";
   const label = document.createElement("span");
   label.className = "knob-label";
-  label.textContent = labelText;
+  const labelModel = knobLabels.describe(definition.key, typeIndex, parameterIndex, labelText, state.knobLabelMode);
+  renderKnobLabel(label, labelModel);
   const output = document.createElement("output");
   output.textContent = String(value);
   const knob = makeKnobFace("continuous-knob");
   knob.tabIndex = 0;
   knob.setAttribute("role", "slider");
-  knob.setAttribute("aria-label", labelText);
+  const accessibleFunction = labelModel.activeFunction || "Unused parameter";
+  knob.setAttribute("aria-label", `${definition.label} ${accessibleFunction}`);
+  control.title = labelModel.activeFunction ? `Current function: ${labelModel.activeFunction}` : "Not used by the selected effect type";
   knob.setAttribute("aria-valuemin", "0");
   knob.setAttribute("aria-valuemax", String(maximum));
   updateKnobFace(knob, value, 0, maximum);
@@ -740,7 +768,7 @@ function renderPatch() {
       parameters.className = "parameter-grid";
       const values = decoded.parameters[definition.key];
       definition.params.forEach((field, index) => {
-        parameters.append(makeContinuousKnob(field, values[index], definition.parameterLabels[index]));
+        parameters.append(makeContinuousKnob(definition, index, field, values[index], definition.parameterLabels[index], decoded.types[definition.key]));
       });
       card.append(parameters);
     }
@@ -1182,6 +1210,20 @@ $("#refresh-ports").addEventListener("click", async () => {
   await refreshStatus();
   await loadDeviceLibrary();
 });
+$("#settings-button").addEventListener("click", () => {
+  document.querySelectorAll('input[name="knob-label-mode"]').forEach((input) => {
+    input.checked = input.value === state.knobLabelMode;
+  });
+  $("#settings-dialog").showModal();
+});
+document.querySelectorAll('input[name="knob-label-mode"]').forEach((input) => input.addEventListener("change", (event) => {
+  if (!event.target.checked) return;
+  state.knobLabelMode = event.target.value === knobLabels.LABEL_MODES.CURRENT
+    ? knobLabels.LABEL_MODES.CURRENT
+    : knobLabels.LABEL_MODES.HARDWARE;
+  try { localStorage.setItem(KNOB_LABEL_MODE_KEY, state.knobLabelMode); } catch { /* Storage is optional. */ }
+  renderPatch();
+}));
 $("#source-device").addEventListener("click", () => setLibrarySource("device"));
 $("#source-local").addEventListener("click", () => setLibrarySource("local"));
 $("#reload-local").addEventListener("click", loadLocalLibrary);
@@ -1276,6 +1318,7 @@ $("#clear-log").addEventListener("click", () => { $("#activity-log").innerHTML =
 
 initializeSlots();
 try { state.libraryView = localStorage.getItem("me80-patch-library-view") === "banks" ? "banks" : "list"; } catch { /* Storage is optional. */ }
+try { state.knobLabelMode = localStorage.getItem(KNOB_LABEL_MODE_KEY) === knobLabels.LABEL_MODES.CURRENT ? knobLabels.LABEL_MODES.CURRENT : knobLabels.LABEL_MODES.HARDWARE; } catch { /* Storage is optional. */ }
 setLibraryView(state.libraryView);
 updateLiveControls();
 (async () => {
