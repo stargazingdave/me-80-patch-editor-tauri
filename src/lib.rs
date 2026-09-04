@@ -648,9 +648,15 @@ fn live_operation<T>(
     operation: impl FnOnce(&mut Session) -> Result<T, String>,
 ) -> Result<T, String> {
     let midi = live_session(state, input, output)?;
-    // A failed request is retried on this same connection by the UI. Do not cycle
-    // editor mode merely because a response timed out or could not be parsed.
-    operation(midi)
+    let result = operation(midi);
+    if result.is_err() {
+        // A timed-out Windows MIDI connection can continue delivering pedal
+        // events while never delivering an RQ1 response again. Release it so the
+        // next poll recreates the connection, just as an application restart does.
+        // Session cleanup intentionally does not send editor-mode-off.
+        state.live_midi = None;
+    }
+    result
 }
 
 fn device_operation<T>(
@@ -709,6 +715,12 @@ fn live_events(
         };
         Ok((events, recovery, live.session.take_logs()))
     };
+    if result.is_err() {
+        // Recovery reads use the same long-lived connection as event polling.
+        // Once that connection times out, keeping it makes every later recovery
+        // read fail until the application is restarted.
+        state.live_midi = None;
+    }
     result
 }
 fn load_temporary_patch(midi: &mut Session, data: &[u8]) -> Result<Vec<MidiLog>, String> {
