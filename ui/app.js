@@ -88,7 +88,7 @@ function showToast(message, error = false) {
 
 function setBusy(busy) {
   state.busy = busy;
-  $("#audition").disabled = busy || !state.currentPatch;
+  $("#audition").disabled = busy || !state.currentPatch || state.live;
   $("#store").disabled = busy || !state.currentPatch;
   $("#read-current").disabled = busy;
   $("#refresh-ports").disabled = busy;
@@ -102,6 +102,8 @@ function normalLiveStatus() {
 function updateLiveControls() {
   const card = $(".live-card");
   card.classList.toggle("active", state.live);
+  $(".audition-card").classList.toggle("hidden", state.live);
+  $("#audition").disabled = state.busy || !state.currentPatch || state.live;
   $("#live-sync").checked = state.live;
   $("#live-sync").disabled = state.busy || !state.live;
   $("#live-from-pedal").disabled = state.busy || state.live;
@@ -140,8 +142,8 @@ async function refreshStatus() {
   try {
     const status = await api("/api/status");
     state.status = status;
-    renderPortSelect($("#input-port"), status.inputs, status.suggestedInput);
-    renderPortSelect($("#output-port"), status.outputs, status.suggestedOutput);
+    renderPortSelect($("#input-port"), status.inputs.filter((port) => port.normal), status.suggestedInput);
+    renderPortSelect($("#output-port"), status.outputs.filter((port) => port.normal), status.suggestedOutput);
     const connected = status.suggestedInput !== undefined && status.suggestedOutput !== undefined;
     $("#status-dot").classList.toggle("online", connected);
     $("#status-label").textContent = connected ? "ME-80 connected" : "ME-80 not found";
@@ -448,7 +450,7 @@ function setPatch(patch, { preserveLive = false } = {}) {
   state.currentPatch = patch;
   $("#empty-state").classList.add("hidden");
   $("#editor").classList.remove("hidden");
-  $("#audition").disabled = state.busy;
+  $("#audition").disabled = state.busy || state.live;
   $("#store").disabled = state.busy;
   updateLiveControls();
   renderPatch();

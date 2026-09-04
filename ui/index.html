@@ -162,10 +162,6 @@
         <button id="store" class="danger-button" disabled>Store to selected slot</button>
       </section>
 
-      <section class="activity">
-        <div class="activity-heading"><h3>Activity</h3><button id="clear-log">Clear</button></div>
-        <div id="activity-log" class="activity-log"><p class="muted">No operations yet.</p></div>
-      </section>
     </aside>
   </main>
 
@@ -195,6 +191,14 @@
           <span><strong>Current function only</strong><small>Show only the parameter controlled by the selected effect type.</small></span>
         </label>
       </fieldset>
+      <details class="settings-diagnostics">
+        <summary>Diagnostics</summary>
+        <p>Recent MIDI traffic and hardware operations for troubleshooting.</p>
+        <section class="activity">
+          <div class="activity-heading"><h3>Activity log</h3><button id="clear-log" type="button">Clear</button></div>
+          <div id="activity-log" class="activity-log"><p class="muted">No operations yet.</p></div>
+        </section>
+      </details>
       <div class="dialog-actions settings-actions"><button value="close" class="primary-button">Done</button></div>
     </form>
   </dialog>

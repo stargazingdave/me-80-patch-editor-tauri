@@ -312,6 +312,12 @@ dialog .settings-choice input { width: 15px; height: 15px; margin: 2px 0 0; padd
 .settings-choice span, .settings-choice strong, .settings-choice small { display: block; }
 .settings-choice strong { font-size: 11px; }
 .settings-choice small { margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.settings-dialog { max-height: calc(100vh - 30px); overflow-y: auto; }
+.settings-diagnostics { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 13px; color: var(--muted); }
+.settings-diagnostics summary { cursor: pointer; font: 700 9px "Cascadia Mono", Consolas, monospace; letter-spacing: .12em; text-transform: uppercase; }
+.settings-diagnostics > p { margin: 9px 0 0; font-size: 9px; }
+.settings-diagnostics .activity { margin-top: 12px; border-top: 0; padding-top: 0; }
+.settings-diagnostics .activity h3 { font-size: 12px; }
 .settings-actions { grid-template-columns: 1fr; }
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; background: #eef9bd; color: #17180f; border-radius: 7px; padding: 10px 15px; font-weight: 700; font-size: 11px; transition: .2s; box-shadow: var(--shadow); }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
@@ -326,7 +332,6 @@ dialog .settings-choice input { width: 15px; height: 15px; margin: 2px 0 0; padd
   .workspace { grid-template-columns: 235px 1fr; }
   .action-panel { grid-column: 1 / -1; border: 1px solid var(--line); display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
   .action-panel > .panel-heading, .action-panel > .port-fields { grid-column: 1 / -1; }
-  .activity { margin-top: 0; border-top: 0; padding: 0 0 0 10px; }
 }
 
 @media (max-width: 760px) {
