@@ -1,9 +1,54 @@
-.panel { min-width: 0; }
-.panelHeading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 18px; }
-.panelHeading h2 { margin: 3px 0 0; font-size: 16px; }
-.eyebrow { color: var(--acid); font-family: "Cascadia Mono", Consolas, monospace; font-size: 9px; letter-spacing: .16em; text-transform: uppercase; }
-.smallButton, .secondaryButton { background: transparent; border: 1px solid var(--line); color: var(--text); border-radius: 7px; padding: 7px 10px; font-size: 11px; }
-.smallButton:hover, .secondaryButton:hover { border-color: var(--muted); }
-.primaryButton, .dangerButton { width: 100%; border: 0; border-radius: 7px; padding: 10px 12px; color: #15160f; background: var(--acid); font-weight: 800; font-size: 11px; }
-.dangerButton { background: var(--orange); color: #1a0e0a; }
-.muted { color: var(--muted); }
+.panel {
+  min-width: 0;
+  height: 100%;
+  overflow: auto;
+}
+.panelHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.panelHeading h2 {
+  margin: 3px 0 0;
+  font-size: 16px;
+}
+.eyebrow {
+  color: var(--acid);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.smallButton,
+.secondaryButton {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 7px 10px;
+  font-size: 11px;
+}
+.smallButton:hover,
+.secondaryButton:hover {
+  border-color: var(--muted);
+}
+.primaryButton,
+.dangerButton {
+  width: 100%;
+  border: 0;
+  border-radius: 7px;
+  padding: 10px 12px;
+  color: #15160f;
+  background: var(--acid);
+  font-weight: 800;
+  font-size: 11px;
+}
+.dangerButton {
+  background: var(--orange);
+  color: #1a0e0a;
+}
+.muted {
+  color: var(--muted);
+}

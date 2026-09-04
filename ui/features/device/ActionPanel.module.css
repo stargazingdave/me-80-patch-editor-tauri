@@ -1,35 +1,205 @@
-.actionPanel { background: var(--panel); padding: 22px 16px; border-left: 1px solid var(--line); }
-.portFields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 18px; }
-.portFields label, .slotField { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
-.portFields select, .slotField select { width: 100%; display: block; margin-top: 6px; padding: 7px; color: var(--text); background: #12130f; border: 1px solid var(--line); border-radius: 6px; outline: none; font-size: 10px; }
-.liveCard { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; align-items: center; border: 1px solid #4a522d; border-radius: 10px; padding: 13px 15px; margin-bottom: 12px; background: linear-gradient(135deg, rgba(217,255,67,.08), rgba(217,255,67,.015)); }
-.liveCard strong, .liveLabel { display: block; }
-.liveCard strong { margin-top: 2px; font-size: 12px; }
-.liveLabel { color: var(--acid); font: 9px "Cascadia Mono", Consolas, monospace; letter-spacing: .14em; }
-.liveCard p { grid-column: 1 / -1; margin: 3px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
-.liveStartActions { grid-column: 1 / -1; display: grid; gap: 6px; margin-top: 5px; }
-.liveStartActions button { display: grid; grid-template-columns: 68px 1fr; column-gap: 8px; text-align: left; align-items: center; padding: 8px 9px; color: var(--text); background: #171812; border: 1px solid var(--line); border-radius: 7px; }
-.liveStartActions button:hover:not(:disabled) { border-color: var(--acid-dark); background: #1e2017; }
-.liveStartActions button > span { grid-row: 1 / 3; color: var(--acid); font: 8px "Cascadia Mono", Consolas, monospace; letter-spacing: .04em; }
-.liveStartActions button strong { font-size: 10px; }
-.liveStartActions button small { color: var(--muted); font-size: 8px; }
-.active .liveStartActions { display: none; }
-.liveToggle input { position: absolute; opacity: 0; pointer-events: none; }
-.liveToggle span { display: block; width: 42px; height: 22px; border-radius: 999px; background: #474940; position: relative; cursor: pointer; transition: .18s; }
-.liveToggle span::after { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; border-radius: 50%; background: #d4d5cd; transition: .18s; }
-.liveToggle input:checked + span { background: var(--acid-dark); box-shadow: 0 0 14px rgba(217,255,67,.18); }
-.liveToggle input:checked + span::after { left: 23px; background: white; }
-.liveToggle input:disabled + span { opacity: .35; cursor: not-allowed; }
-.actionCard { position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-bottom: 12px; background: var(--panel-2); }
-.actionNumber { position: absolute; right: 11px; top: 5px; font: 500 33px "Cascadia Mono", Consolas, monospace; color: rgba(255,255,255,.045); }
-.actionCard h3 { margin: 0 0 7px; font-size: 14px; }
-.actionCard p { color: var(--muted); font-size: 10px; line-height: 1.6; min-height: 47px; }
-.slotField { display: block; margin: 13px 0 10px; }
+.actionPanel {
+  background: var(--panel);
+  padding: 22px 16px;
+  border-left: 1px solid var(--line);
+  overflow: auto;
+  max-height: calc(100vh - 82px);
+}
+.portFields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.portFields label,
+.slotField {
+  color: var(--muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.portFields select,
+.slotField select {
+  width: 100%;
+  display: block;
+  margin-top: 6px;
+  padding: 7px;
+  color: var(--text);
+  background: #12130f;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: none;
+  font-size: 10px;
+}
+.liveCard {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 5px 12px;
+  align-items: center;
+  border: 1px solid #4a522d;
+  border-radius: 10px;
+  padding: 13px 15px;
+  margin-bottom: 12px;
+  background: linear-gradient(
+    135deg,
+    rgba(217, 255, 67, 0.08),
+    rgba(217, 255, 67, 0.015)
+  );
+}
+.liveCard strong,
+.liveLabel {
+  display: block;
+}
+.liveCard strong {
+  margin-top: 2px;
+  font-size: 12px;
+}
+.liveLabel {
+  color: var(--acid);
+  font:
+    9px "Cascadia Mono",
+    Consolas,
+    monospace;
+  letter-spacing: 0.14em;
+}
+.liveCard p {
+  grid-column: 1 / -1;
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+.liveStartActions {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+  margin-top: 5px;
+}
+.liveStartActions button {
+  display: grid;
+  grid-template-columns: 68px 1fr;
+  column-gap: 8px;
+  text-align: left;
+  align-items: center;
+  padding: 8px 9px;
+  color: var(--text);
+  background: #171812;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.liveStartActions button:hover:not(:disabled) {
+  border-color: var(--acid-dark);
+  background: #1e2017;
+}
+.liveStartActions button > span {
+  grid-row: 1 / 3;
+  color: var(--acid);
+  font:
+    8px "Cascadia Mono",
+    Consolas,
+    monospace;
+  letter-spacing: 0.04em;
+}
+.liveStartActions button strong {
+  font-size: 10px;
+}
+.liveStartActions button small {
+  color: var(--muted);
+  font-size: 8px;
+}
+.active .liveStartActions {
+  display: none;
+}
+.liveToggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.liveToggle span {
+  display: block;
+  width: 42px;
+  height: 22px;
+  border-radius: 999px;
+  background: #474940;
+  position: relative;
+  cursor: pointer;
+  transition: 0.18s;
+}
+.liveToggle span::after {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 3px;
+  top: 3px;
+  border-radius: 50%;
+  background: #d4d5cd;
+  transition: 0.18s;
+}
+.liveToggle input:checked + span {
+  background: var(--acid-dark);
+  box-shadow: 0 0 14px rgba(217, 255, 67, 0.18);
+}
+.liveToggle input:checked + span::after {
+  left: 23px;
+  background: white;
+}
+.liveToggle input:disabled + span {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.actionCard {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px;
+  margin-bottom: 12px;
+  background: var(--panel-2);
+}
+.actionNumber {
+  position: absolute;
+  right: 11px;
+  top: 5px;
+  font:
+    500 33px "Cascadia Mono",
+    Consolas,
+    monospace;
+  color: rgba(255, 255, 255, 0.045);
+}
+.actionCard h3 {
+  margin: 0 0 7px;
+  font-size: 14px;
+}
+.actionCard p {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+  min-height: 47px;
+}
+.slotField {
+  display: block;
+  margin: 13px 0 10px;
+}
 @media (max-width: 850px) {
-  .actionPanel { grid-column: 1 / -1; border: 1px solid var(--line); display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
-  .actionHeading, .portFields { grid-column: 1 / -1; }
+  .actionPanel {
+    grid-column: 1 / -1;
+    border: 1px solid var(--line);
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+  }
+  .actionHeading,
+  .portFields {
+    grid-column: 1 / -1;
+  }
 }
 @media (max-width: 760px) {
-  .actionPanel { border: 0; grid-template-columns: 1fr; }
-  .actionPanel > * { grid-column: auto !important; }
+  .actionPanel {
+    border: 0;
+    grid-template-columns: 1fr;
+  }
+  .actionPanel > * {
+    grid-column: auto !important;
+  }
 }
