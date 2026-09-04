@@ -1,0 +1,9 @@
+.dialog { width: min(440px, calc(100vw - 30px)); color: var(--text); background: #20211c; border: 1px solid #46483f; border-radius: 12px; padding: 25px; box-shadow: 0 25px 80px rgba(0,0,0,.65); }
+.dialog::backdrop { background: rgba(0,0,0,.72); backdrop-filter: blur(3px); }
+.dialog h2 { margin: 7px 0 9px; }
+.dialog p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.dialog label { display: block; margin-top: 20px; font-size: 11px; }
+.dialog input { display: block; width: 100%; margin-top: 7px; color: var(--text); background: #11120f; border: 1px solid var(--line); padding: 10px; border-radius: 7px; outline: none; }
+.dialog input:focus { border-color: var(--orange); }
+.kicker { color: var(--orange); font: 10px "Cascadia Mono", Consolas, monospace; text-transform: uppercase; letter-spacing: .15em; }
+.actions { display: grid; grid-template-columns: 1fr 1.4fr; gap: 9px; margin-top: 20px; }

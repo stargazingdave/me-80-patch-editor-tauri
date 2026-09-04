@@ -1,0 +1,29 @@
+.topbar { height: 82px; padding: 0 26px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; background: rgba(17,18,15,.95); }
+.brand, .connection, .topbarActions { display: flex; align-items: center; }
+.brand { gap: 13px; }
+.brandMark { width: 48px; height: 48px; border: 2px solid var(--acid); display: grid; place-content: center; line-height: .9; transform: skew(-5deg); }
+.brandMark span { color: var(--muted); font-size: 10px; letter-spacing: .22em; }
+.brandMark strong { font-size: 20px; color: var(--acid); }
+.brand h1 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
+.brand p { margin: 2px 0 0; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .12em; }
+.topbarActions { gap: 9px; }
+.settingsButton { display: flex; align-items: center; gap: 7px; height: 40px; padding: 0 13px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--panel); }
+.settingsButton span { color: var(--text); font-size: 15px; }
+.settingsButton strong { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.settingsButton:hover, .settingsButton:focus-visible { color: var(--text); border-color: var(--muted); outline: none; }
+.connection { gap: 10px; border: 1px solid var(--line); border-radius: 999px; padding: 8px 9px 8px 13px; background: var(--panel); min-width: 225px; }
+.connection div { flex: 1; }
+.connection strong, .connection small { display: block; }
+.connection strong { font-size: 12px; }
+.connection small { color: var(--muted); font-size: 10px; margin-top: 1px; }
+.statusDot { width: 8px; height: 8px; border-radius: 50%; background: #6b6d63; box-shadow: 0 0 0 4px rgba(107,109,99,.13); }
+.online { background: var(--acid); box-shadow: 0 0 0 4px rgba(217,255,67,.13), 0 0 14px rgba(217,255,67,.5); }
+.iconButton { border: 0; color: var(--text); background: transparent; font-size: 20px; width: 30px; height: 30px; border-radius: 50%; }
+.iconButton:hover { background: var(--line); }
+@media (max-width: 760px) {
+  .topbar { padding: 0 14px; }
+  .settingsButton { width: 40px; justify-content: center; padding: 0; }
+  .settingsButton strong { display: none; }
+  .connection { min-width: 0; }
+  .connection small { display: none; }
+}

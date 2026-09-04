@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "pnpm typecheck && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types ui/knob-labels.test.ts"
+    "test": "node --experimental-strip-types ui/lib/knobLabels.test.ts"
   },
   "dependencies": {
     "react": "^19.2.8",

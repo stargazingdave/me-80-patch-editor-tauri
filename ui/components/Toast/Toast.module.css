@@ -1,0 +1,3 @@
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; background: #eef9bd; color: #17180f; border-radius: 7px; padding: 10px 15px; font-weight: 700; font-size: 11px; transition: .2s; box-shadow: var(--shadow); }
+.show { opacity: 1; transform: translate(-50%, 0); }
+.error { background: #ffb6a1; }

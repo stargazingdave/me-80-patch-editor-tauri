@@ -1,0 +1,3 @@
+.workspace { display: grid; grid-template-columns: 230px minmax(400px, 1fr) 270px; min-height: calc(100vh - 82px); }
+@media (max-width: 850px) { .workspace { grid-template-columns: 235px 1fr; } }
+@media (max-width: 760px) { .workspace { display: block; } }

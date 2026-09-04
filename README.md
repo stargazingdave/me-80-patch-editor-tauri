@@ -25,6 +25,23 @@ cargo tauri dev
 
 Vite provides React Fast Refresh while `cargo tauri dev` is running. Frontend-only development can also be started in a browser with `pnpm dev`; native MIDI actions require the Tauri window.
 
+The React frontend is organized by responsibility:
+
+```text
+ui/
+  app/          application composition and coordination
+  components/   shared presentational components
+  domain/       shared UI domain types
+  features/     device, editor, library, and settings features
+  hooks/        reusable application hooks
+  lib/          framework-independent helpers and tests
+  services/     Tauri API access
+  styles/       global tokens, resets, and shared CSS modules
+  types/        ambient TypeScript declarations
+```
+
+Feature-specific components, hooks, and CSS modules stay inside their feature directory.
+
 Create the optimized x64 NSIS installer with:
 
 ```powershell
