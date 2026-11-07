@@ -57,3 +57,19 @@ Backups and pre-write recovery files are stored under `Documents\me-80-patch-edi
 ## MIDI safety
 
 The Rust backend preserves the guarded workflow of the original editor: exact normal `ME-80` endpoint names, single requests without retries, checksum validation, complete 71-byte readback verification, temporary-memory audition, explicit user-slot confirmation, and a recovery capture before a permanent write.
+
+## Automated releases
+
+Run **Release Windows installer** in GitHub Actions on the reviewed source
+branch. The workflow validates frontend and Rust targets, builds the Windows x64
+NSIS installer, checks source content and executable format, then publishes the
+public GitHub Release and the project download manifest using the private shared
+publisher. Metadata is published only after anonymous binary checksum verification.
+
+Actions secrets `DISTRIBUTION_TOOLS_SSH_KEY` (read-only tooling deploy key) and
+`BLOB_READ_WRITE_TOKEN` are configured in the repository. The website needs no
+GitHub source credential. The publisher is pinned to a reviewed immutable commit;
+update it only after reviewing the shared tooling. CI release version comes from
+Cargo.toml and must agree with tauri.conf.json. Earlier published versions remain
+available. Update RELEASE-NOTES.md for each new release. Physical pedal checks
+remain separate from automated tests.

@@ -8,7 +8,9 @@ config=json.loads((root/'tauri.conf.json').read_text())
 if config['version']!=version:raise ValueError('Version mismatch')
 revision=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
 if revision!=os.environ['GITHUB_SHA']:raise ValueError('Source revision mismatch')
-if subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=root,text=True).strip():raise ValueError('Tracked source changed during validation')
+# Tauri normalizes Cargo.toml line endings on Windows. Compare actual Git
+# content, including staged changes, rather than the cached status flag.
+if subprocess.run(['git','diff','--quiet','--no-ext-diff','HEAD','--'],cwd=root).returncode != 0:raise ValueError('Tracked source content changed during validation')
 filename=f'me-80-patch-editor_{version}_x64-setup.exe'
 source=root/'target/release/bundle/nsis'/filename
 # NSIS must be a real PE executable, not a missing or renamed artifact.
