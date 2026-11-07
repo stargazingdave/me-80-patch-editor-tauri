@@ -34,7 +34,11 @@ jobs:
       - name: Install pinned Tauri CLI
         run: npm install --global @tauri-apps/cli@2.11.4
       - name: Build Windows x64 NSIS installer
-        run: tauri build --ci --target x86_64-pc-windows-msvc -- --locked
+        run: |
+          # Invoke Node directly: the PowerShell npm shim consumes bare --.
+          $tauriCli = Join-Path (npm root --global) '@tauri-apps/cli/tauri.js'
+          node $tauriCli build --ci --target x86_64-pc-windows-msvc -- --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Prepare approved distribution
         run: |
           # An explicit target puts the bundle below that target directory.
