@@ -1,6 +1,7 @@
 [package]
 name = "me-80-patch-editor"
-version = "0.1.0"
+default-run = "me-80-patch-editor"
+version = "0.2.0"
 description = "Native Windows patch editor and librarian for the BOSS ME-80"
 authors = ["me-80-patch-editor contributors"]
 edition = "2021"

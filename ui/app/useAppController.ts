@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  type DevicePatch, type Edit, type LabelMode,
+  type DevicePatch, type DeviceSettings, type DiscoveryEvent, type Edit, type LabelMode,
   type LiveSetPatch, type LocalPatch,
   type LocalSource, type MidiLog, type PatchView, type StoreDraft
 } from "../domain/types";
@@ -22,6 +22,8 @@ export function useAppController() {
   const [busy, setBusyState] = useState(false);
   const [knobLabelMode, setKnobLabelMode] = useStoredPreference<LabelMode>(KNOB_LABEL_MODE_KEY, "hardware", (value): value is LabelMode => value === "hardware" || value === "current");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [deviceSettings, setDeviceSettings] = useState<DeviceSettings | null>(null);
+  const [deviceSettingsError, setDeviceSettingsError] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [storeSlot, setStoreSlot] = useState("U9-4");
   const [confirmText, setConfirmText] = useState("");
@@ -195,6 +197,90 @@ export function useAppController() {
     }
   }
 
+  async function probeSystem(address: number[], size: number[]) {
+    try {
+      await stopLive();
+      setBusy(true);
+      addActivity("SYSTEM RQ1", `Probing ${address.map((byte) => byte.toString(16).padStart(2, "0").toUpperCase()).join(" ")} read-only…`);
+      const result = await api<{ response: DiscoveryEvent | null; error: string | null; logs: MidiLog[]; capturePath: string }>("/api/device/discovery/probe", "POST", { ...selectedPorts(), address, size });
+      addMidiLogs(result.logs);
+      if (result.response) addActivity("SYSTEM RX", `${result.response.addressHex} · ${result.response.dataHex || "no data"}`);
+      else addActivity("NO RESPONSE", result.error ?? "The ME-80 returned no data for this address.");
+      addActivity("CAPTURE", result.capturePath);
+      showToast(result.response ? `System probe returned ${result.response.data.length} byte${result.response.data.length === 1 ? "" : "s"}.` : "No response; the attempt was saved.", !result.response);
+    } catch (error) {
+      const message = errorMessage(error);
+      addActivity("PROBE", message, true);
+      showToast(message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function readDeviceSettings() {
+    try {
+      await stopLive();
+      setBusy(true);
+      setDeviceSettingsError("");
+      addActivity("SYSTEM RQ1", "Reading the confirmed 16-byte ME-80 system block…");
+      const result = await api<{ settings: DeviceSettings; logs: MidiLog[] }>("/api/device/system/read", "POST", selectedPorts());
+      addMidiLogs(result.logs);
+      setDeviceSettings(result.settings);
+      addActivity("SYSTEM", `Knob Operation: ${result.settings.knobOperation === "direct" ? "Direct (n0)" : "Catch (n1)"}`);
+    } catch (error) {
+      const message = errorMessage(error);
+      setDeviceSettings(null);
+      setDeviceSettingsError(message);
+      addActivity("SYSTEM", message, true);
+      showToast(message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setKnobOperation(value: DeviceSettings["knobOperation"]) {
+    try {
+      await stopLive();
+      setBusy(true);
+      addActivity("SYSTEM DT1", `Applying Knob Operation: ${value === "direct" ? "Direct (n0)" : "Catch (n1)"}…`);
+      const result = await api<{ settings: DeviceSettings; logs: MidiLog[]; requiresHardwareWrite: boolean }>("/api/device/system/knob-operation", "POST", { ...selectedPorts(), value });
+      addMidiLogs(result.logs);
+      setDeviceSettings(result.settings);
+      addActivity("SYSTEM", `${value === "direct" ? "Direct (n0)" : "Catch (n1)"} verified. Press WRITE on the pedal to keep it after power-off.`);
+      showToast(`${value === "direct" ? "Direct" : "Catch"} applied. Press WRITE on the ME-80 to save it.`);
+    } catch (error) {
+      const message = errorMessage(error);
+      addActivity("SYSTEM", message, true);
+      showToast(message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function listenForSystemEvents() {
+    try {
+      await stopLive();
+      setBusy(true);
+      addActivity("LISTEN", "Listening passively for 12 seconds; operate one pedal setting now.");
+      const result = await api<{ events: DiscoveryEvent[]; logs: MidiLog[]; capturePath: string }>("/api/device/discovery/listen", "POST", { ...selectedPorts(), milliseconds: 12_000 });
+      addMidiLogs(result.logs);
+      if (result.events.length) {
+        result.events.forEach((event) => addActivity("SYSTEM EVENT", `${event.addressHex} · ${event.dataHex || "no data"}`));
+        showToast(`Captured ${result.events.length} ME-80 DT1 event${result.events.length === 1 ? "" : "s"}.`);
+      } else {
+        addActivity("LISTEN", "No ME-80 DT1 events were emitted during the passive capture.");
+        showToast("No system DT1 events captured.");
+      }
+      addActivity("CAPTURE", result.capturePath);
+    } catch (error) {
+      const message = errorMessage(error);
+      addActivity("LISTEN", message, true);
+      showToast(message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function requestStore(name: string) {
     const patch = currentPatchRef.current;
     const trimmed = name.trimEnd();
@@ -250,7 +336,7 @@ export function useAppController() {
   };
 
   return {
-    header: { status, statusError, connected, busy, live, onSettings: () => setSettingsOpen(true), onRefresh: () => void refreshDevice() },
+    header: { status, statusError, connected, busy, live, onSettings: () => { setSettingsOpen(true); if (connected && !busyRef.current) void readDeviceSettings(); }, onRefresh: () => void refreshDevice() },
     library: {
       source: librarySource, view: libraryView, activeKey: activeLibraryKey, devicePatches, deviceLoading,
       localLibrary, busy, live, currentPatch, currentLocalSource, fileInput,
@@ -271,7 +357,7 @@ export function useAppController() {
       onStoreSlot: setStoreSlot, onRequestStore: requestStore
     },
     confirmDialog: { open: confirmOpen, slot: storeSlot, text: confirmText, onText: setConfirmText, onClose: () => setConfirmOpen(false), onConfirm: () => void confirmStore() },
-    settingsDialog: { open: settingsOpen, labelMode: knobLabelMode, activity, onLabelMode: setKnobLabelMode, onClear: clearActivity, onClose: () => setSettingsOpen(false) },
+    settingsDialog: { open: settingsOpen, labelMode: knobLabelMode, activity, connected, busy, deviceSettings, deviceSettingsError, onLabelMode: setKnobLabelMode, onReadDeviceSettings: readDeviceSettings, onSetKnobOperation: setKnobOperation, onProbeSystem: probeSystem, onListenForSystemEvents: listenForSystemEvents, onClear: clearActivity, onClose: () => setSettingsOpen(false) },
     toast
   };
 }

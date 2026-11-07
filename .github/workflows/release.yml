@@ -1,0 +1,75 @@
+name: Release Windows installer
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: distribution-me-80-patch-editor
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@11.19.0
+      - name: Install UI dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Validate frontend
+        run: |
+          pnpm typecheck
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pnpm test
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Install pinned Rust
+        run: rustup default 1.98.0
+      - name: Test Rust and discovery CLI
+        run: cargo test --locked --all-targets
+      - name: Install pinned Tauri CLI
+        run: cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build Windows x64 NSIS installer
+        run: cargo tauri build --ci --target x86_64-pc-windows-msvc -- --locked
+      - name: Prepare approved distribution
+        run: |
+          # An explicit target puts the bundle below that target directory.
+          New-Item -ItemType Directory -Force target/release/bundle/nsis | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/bundle/nsis/* target/release/bundle/nsis/
+          python scripts/prepare-release.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: me-80-approved
+          path: release-approved/
+          if-no-files-found: error
+          retention-days: 14
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: stargazingdave/spaceship
+          ref: 5a249d21d6de39a8d5fc6edabf19854566d85ba8
+          ssh-key: ${{ secrets.DISTRIBUTION_TOOLS_SSH_KEY }}
+          persist-credentials: false
+          path: tooling
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: me-80-approved
+          path: approved
+      - uses: ./tooling/.github/actions/publish-distribution
+        with:
+          project-id: me-80-patch-editor
+          bundle: approved/bundle.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}

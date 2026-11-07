@@ -31,6 +31,8 @@ export interface LiveSet { id: string; name: string; patches: LiveSetPatch[] }
 export interface LocalLibrary { patches: LocalPatch[]; liveSets: LiveSet[]; warnings: string[] }
 export type LocalSource = { kind: "patch"; id: string } | { kind: "liveSet"; id: string; index: number };
 export interface MidiLog { direction: string; hex: string }
+export interface DiscoveryEvent { address: number[]; addressHex: string; data: number[]; dataHex: string; checksumValid: boolean }
+export interface DeviceSettings { knobOperation: "direct" | "catch"; rawHex: string }
 export interface ActivityEntry { id: number; label: string; detail: string; error: boolean; time: string }
 export interface ToastState { id: number; message: string; error: boolean }
 export interface StoreDraft { sessionId: string; name: string }

@@ -96,6 +96,21 @@ fn hex_bytes(value: &Value, label: &str) -> Result<Vec<u8>, String> {
         })
         .collect()
 }
+fn seven_bit_quad(body: &Value, key: &str) -> Result<[u8; 4], String> {
+    let value = body
+        .get(key)
+        .ok_or_else(|| format!("{key} is required."))?;
+    let value = bytes(value, key)?;
+    if value.len() != 4 || value.iter().any(|byte| *byte > 0x7f) {
+        return Err(format!("{key} must contain exactly four 7-bit bytes."));
+    }
+    Ok(value.try_into().unwrap())
+}
+fn seven_bit_size(value: [u8; 4]) -> usize {
+    value
+        .into_iter()
+        .fold(0usize, |total, byte| total * 128 + byte as usize)
+}
 fn same(a: &[u8], b: &[u8]) -> bool {
     a == b
 }
@@ -366,6 +381,15 @@ fn write_json_safely(path: &Path, value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+fn save_discovery_capture(data_dir: &Path, kind: &str, value: &Value) -> Result<String, String> {
+    let stamp = Utc::now().format("%Y%m%d-%H%M%S%.3fZ");
+    let path = data_dir
+        .join("discovery")
+        .join(format!("me80-{kind}-{stamp}.json"));
+    write_json_safely(&path, value)?;
+    Ok(path.display().to_string())
+}
+
 fn local_patch_value(id: &str, name: &str, data: &[u8]) -> Value {
     json!({
         "schema":"me80-local-patch-v1",
@@ -596,6 +620,59 @@ fn read_patch(
     midi.begin_operation();
     let response = midi.request(&request, address)?;
     Ok((response.data, midi.take_logs()))
+}
+
+const SYSTEM_ADDRESS: [u8; 4] = [0x10, 0, 0, 0];
+const SYSTEM_SIZE: [u8; 4] = [0, 0, 0, 0x10];
+
+fn system_settings_view(data: &[u8]) -> Result<Value, String> {
+    if data.len() != 16 {
+        return Err(format!(
+            "ME-80 system response contained {}, not 16, bytes.",
+            data.len()
+        ));
+    }
+    let knob_operation = match data[0] {
+        0 => "direct",
+        1 => "catch",
+        value => return Err(format!("Unknown ME-80 Knob Operation value {value}.")),
+    };
+    let raw_hex = data
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Ok(json!({"knobOperation":knob_operation,"rawHex":raw_hex}))
+}
+
+fn read_system_settings(midi: &mut Session) -> Result<(Value, Vec<MidiLog>), String> {
+    midi.begin_operation();
+    let response = midi.request_raw(
+        &sysex::rq1(SYSTEM_ADDRESS, SYSTEM_SIZE),
+        SYSTEM_ADDRESS,
+    )?;
+    Ok((system_settings_view(&response.data)?, midi.take_logs()))
+}
+
+fn write_knob_operation(
+    midi: &mut Session,
+    value: u8,
+) -> Result<(Value, Vec<MidiLog>), String> {
+    if value > 1 {
+        return Err("Knob Operation must be Direct or Catch.".into());
+    }
+    midi.begin_operation();
+    midi.send(&sysex::dt1(SYSTEM_ADDRESS, &[value])?)?;
+    thread::sleep(Duration::from_millis(250));
+    let response = midi.request_raw(
+        &sysex::rq1(SYSTEM_ADDRESS, SYSTEM_SIZE),
+        SYSTEM_ADDRESS,
+    )?;
+    let settings = system_settings_view(&response.data)?;
+    if response.data[0] != value {
+        return Err("Knob Operation readback did not match the requested value.".into());
+    }
+    Ok((settings, midi.take_logs()))
 }
 
 fn read_device_library(
@@ -897,6 +974,102 @@ fn route(state: &mut AppState, path: &str, method: &str, body: &Value) -> Result
             "patches": entries.into_iter().map(|(slot, name)| json!({"slot":slot,"name":name})).collect::<Vec<_>>(),
             "logs": logs
         }));
+    }
+    if method == "POST" && path == "/api/device/system/read" {
+        let (input, output) = (index(body, "inputIndex")?, index(body, "outputIndex")?);
+        let (settings, logs) =
+            device_operation(state, input, output, read_system_settings)?;
+        return Ok(json!({"settings":settings,"logs":logs}));
+    }
+    if method == "POST" && path == "/api/device/system/knob-operation" {
+        let (input, output) = (index(body, "inputIndex")?, index(body, "outputIndex")?);
+        let value = match string(body, "value")? {
+            "direct" => 0,
+            "catch" => 1,
+            _ => return Err("Knob Operation must be direct or catch.".into()),
+        };
+        let (settings, logs) = device_operation(state, input, output, |midi| {
+            write_knob_operation(midi, value)
+        })?;
+        return Ok(json!({
+            "settings": settings,
+            "logs": logs,
+            "requiresHardwareWrite": true
+        }));
+    }
+    if method == "POST" && path == "/api/device/discovery/probe" {
+        let (input, output) = (index(body, "inputIndex")?, index(body, "outputIndex")?);
+        let address = seven_bit_quad(body, "address")?;
+        let size = seven_bit_quad(body, "size")?;
+        let requested_size = seven_bit_size(size);
+        if !(1..=128).contains(&requested_size) {
+            return Err("Discovery RQ1 size must be between 1 and 128 bytes.".into());
+        }
+        let (result, logs) = device_operation(state, input, output, |midi| {
+            midi.begin_operation();
+            let result = midi.request_raw(&sysex::rq1(address, size), address);
+            Ok((result, midi.take_logs()))
+        })?;
+        let (response, error) = match result {
+            Ok(response) => {
+                let response_address = response.address;
+                let data = response.data;
+                (Some(json!({
+                    "address": response_address,
+                    "addressHex": response_address.iter().map(|byte| format!("{byte:02X}")).collect::<Vec<_>>().join(" "),
+                    "dataHex": data.iter().map(|byte| format!("{byte:02X}")).collect::<Vec<_>>().join(" "),
+                    "data": data,
+                    "checksumValid": response.checksum_valid
+                })), None)
+            }
+            Err(error) => (None, Some(error)),
+        };
+        let capture = json!({
+            "schema": "me80-system-discovery-v1",
+            "device": "ME-80",
+            "createdAt": Utc::now().to_rfc3339(),
+            "kind": "rq1-probe",
+            "requestedAddress": address,
+            "requestedSize": size,
+            "response": response,
+            "error": error,
+            "logs": logs
+        });
+        let capture_path = save_discovery_capture(&state.data_dir, "probe", &capture)?;
+        return Ok(json!({"response":response,"error":error,"logs":logs,"capturePath":capture_path}));
+    }
+    if method == "POST" && path == "/api/device/discovery/listen" {
+        let (input, output) = (index(body, "inputIndex")?, index(body, "outputIndex")?);
+        let milliseconds = body
+            .get("milliseconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(12_000);
+        if !(1_000..=30_000).contains(&milliseconds) {
+            return Err("Discovery listening time must be between 1 and 30 seconds.".into());
+        }
+        let (events, logs) = device_operation(state, input, output, |midi| {
+            midi.begin_operation();
+            let events = midi.listen_dt1(Duration::from_millis(milliseconds))?;
+            Ok((events, midi.take_logs()))
+        })?;
+        let events = events.into_iter().map(|event| json!({
+                "address": event.address,
+                "addressHex": event.address.iter().map(|byte| format!("{byte:02X}")).collect::<Vec<_>>().join(" "),
+                "dataHex": event.data.iter().map(|byte| format!("{byte:02X}")).collect::<Vec<_>>().join(" "),
+                "data": event.data,
+                "checksumValid": event.checksum_valid
+            })).collect::<Vec<_>>();
+        let capture = json!({
+            "schema": "me80-system-discovery-v1",
+            "device": "ME-80",
+            "createdAt": Utc::now().to_rfc3339(),
+            "kind": "passive-listen",
+            "durationMilliseconds": milliseconds,
+            "events": events,
+            "logs": logs
+        });
+        let capture_path = save_discovery_capture(&state.data_dir, "listen", &capture)?;
+        return Ok(json!({"events":events,"logs":logs,"capturePath":capture_path}));
     }
     if method == "POST" && path == "/api/library/load-device" {
         let slot = sysex::slot(string(body, "slot")?)?;
@@ -1339,6 +1512,279 @@ pub fn run() {
         .expect("error while running me-80-patch-editor")
 }
 
+pub fn run_read_only_discovery_probe(address: [u8; 4], size: [u8; 4]) -> Result<Value, String> {
+    if address.iter().chain(size.iter()).any(|byte| *byte > 0x7f) {
+        return Err("Discovery address and size must contain only 7-bit bytes.".into());
+    }
+    let requested_size = seven_bit_size(size);
+    if !(1..=128).contains(&requested_size) {
+        return Err("Discovery RQ1 size must be between 1 and 128 bytes.".into());
+    }
+    let (inputs, outputs) = midi::ports()?;
+    let input = inputs
+        .iter()
+        .find(|port| port.normal)
+        .map(|port| port.index)
+        .ok_or("No normal ME-80 MIDI input was found.")?;
+    let output = outputs
+        .iter()
+        .find(|port| port.normal)
+        .map(|port| port.index)
+        .ok_or("No normal ME-80 MIDI output was found.")?;
+    let mut midi = Session::open(input, output)?;
+    midi.begin_operation();
+    let result = midi.request_raw(&sysex::rq1(address, size), address);
+    let logs = midi.take_logs();
+    let (response, error) = match result {
+        Ok(response) => {
+            let response_address = response.address;
+            let data = response.data;
+            (Some(json!({
+                "address": response_address,
+                "addressHex": response_address.iter().map(|byte| format!("{byte:02X}")).collect::<Vec<_>>().join(" "),
+                "dataHex": data.iter().map(|byte| format!("{byte:02X}")).collect::<Vec<_>>().join(" "),
+                "data": data,
+                "checksumValid": response.checksum_valid
+            })), None)
+        }
+        Err(error) => (None, Some(error)),
+    };
+    let capture = json!({
+        "schema": "me80-system-discovery-v1",
+        "device": "ME-80",
+        "createdAt": Utc::now().to_rfc3339(),
+        "kind": "command-line-rq1-probe",
+        "requestedAddress": address,
+        "requestedSize": size,
+        "response": response,
+        "error": error,
+        "logs": logs
+    });
+    let capture_path = save_discovery_capture(&data_directory(), "probe", &capture)?;
+    Ok(json!({"response":response,"error":error,"logs":logs,"capturePath":capture_path}))
+}
+
+pub fn run_reversible_discovery_write_test(
+    address: [u8; 4],
+    test_value: u8,
+) -> Result<Value, String> {
+    if address.iter().any(|byte| *byte > 0x7f) || test_value > 0x7f {
+        return Err("Discovery address and value must contain only 7-bit bytes.".into());
+    }
+    let (inputs, outputs) = midi::ports()?;
+    let input = inputs
+        .iter()
+        .find(|port| port.normal)
+        .map(|port| port.index)
+        .ok_or("No normal ME-80 MIDI input was found.")?;
+    let output = outputs
+        .iter()
+        .find(|port| port.normal)
+        .map(|port| port.index)
+        .ok_or("No normal ME-80 MIDI output was found.")?;
+    let mut midi = Session::open(input, output)?;
+    midi.begin_operation();
+    let request = sysex::rq1(address, [0, 0, 0, 1]);
+    let original = midi.request_raw(&request, address)?;
+    if original.data.len() != 1 {
+        return Err(format!(
+            "Expected one original byte at the write-test address, received {}.",
+            original.data.len()
+        ));
+    }
+    let original_value = original.data[0];
+    if original_value == test_value {
+        return Err(format!(
+            "The device already contains {test_value:02X}; choose a different reversible test value."
+        ));
+    }
+
+    midi.send(&sysex::dt1(address, &[test_value])?)?;
+    thread::sleep(Duration::from_millis(250));
+    let changed = midi.request_raw(&request, address);
+
+    // Restoration is attempted even if the changed-value readback failed.
+    let restore_send = midi.send(&sysex::dt1(address, &[original_value])?);
+    thread::sleep(Duration::from_millis(250));
+    let restored = if restore_send.is_ok() {
+        midi.request_raw(&request, address)
+    } else {
+        Err(restore_send.unwrap_err())
+    };
+    let logs = midi.take_logs();
+
+    let changed_value = changed.as_ref().ok().and_then(|response| {
+        (response.data.len() == 1).then(|| response.data[0])
+    });
+    let restored_value = restored.as_ref().ok().and_then(|response| {
+        (response.data.len() == 1).then(|| response.data[0])
+    });
+    let changed_error = changed.as_ref().err().cloned();
+    let restored_error = restored.as_ref().err().cloned();
+    let capture = json!({
+        "schema": "me80-system-discovery-v1",
+        "device": "ME-80",
+        "createdAt": Utc::now().to_rfc3339(),
+        "kind": "reversible-dt1-write-test",
+        "address": address,
+        "originalValue": original_value,
+        "testValue": test_value,
+        "changedReadback": changed_value,
+        "changedError": changed_error,
+        "restoredReadback": restored_value,
+        "restoredError": restored_error,
+        "logs": logs
+    });
+    let capture_path = save_discovery_capture(&data_directory(), "write-test", &capture)?;
+    if changed_value != Some(test_value) {
+        return Err(format!(
+            "Test write was not verified; restoration was attempted. Evidence: {capture_path}"
+        ));
+    }
+    if restored_value != Some(original_value) {
+        return Err(format!(
+            "Original value was not verified after restoration. Evidence: {capture_path}"
+        ));
+    }
+    Ok(json!({
+        "address": address,
+        "originalValue": original_value,
+        "testValue": test_value,
+        "changedReadback": changed_value,
+        "restoredReadback": restored_value,
+        "capturePath": capture_path,
+        "logs": logs
+    }))
+}
+
+pub fn run_verified_discovery_write(address: [u8; 4], value: u8) -> Result<Value, String> {
+    run_verified_discovery_write_inner(address, value, false)
+}
+
+pub fn run_verified_discovery_write_in_editor_mode(
+    address: [u8; 4],
+    value: u8,
+) -> Result<Value, String> {
+    run_verified_discovery_write_inner(address, value, true)
+}
+
+pub fn run_editor_mode_discovery_listen(milliseconds: u64) -> Result<Value, String> {
+    if !(1_000..=30_000).contains(&milliseconds) {
+        return Err("Discovery listening time must be between 1 and 30 seconds.".into());
+    }
+    let (inputs, outputs) = midi::ports()?;
+    let input = inputs
+        .iter()
+        .find(|port| port.normal)
+        .map(|port| port.index)
+        .ok_or("No normal ME-80 MIDI input was found.")?;
+    let output = outputs
+        .iter()
+        .find(|port| port.normal)
+        .map(|port| port.index)
+        .ok_or("No normal ME-80 MIDI output was found.")?;
+    let mut midi = Session::open(input, output)?;
+    midi.begin_operation();
+    midi.enable_editor_mode()?;
+    let events = midi.listen_dt1(Duration::from_millis(milliseconds))?;
+    let logs = midi.take_logs();
+    let events = events
+        .into_iter()
+        .map(|event| {
+            json!({
+                "address": event.address,
+                "addressHex": event.address.iter().map(|byte| format!("{byte:02X}")).collect::<Vec<_>>().join(" "),
+                "data": event.data,
+                "dataHex": event.data.iter().map(|byte| format!("{byte:02X}")).collect::<Vec<_>>().join(" "),
+                "checksumValid": event.checksum_valid
+            })
+        })
+        .collect::<Vec<_>>();
+    let capture = json!({
+        "schema": "me80-system-discovery-v1",
+        "device": "ME-80",
+        "createdAt": Utc::now().to_rfc3339(),
+        "kind": "editor-mode-listen",
+        "durationMilliseconds": milliseconds,
+        "events": events,
+        "logs": logs
+    });
+    let capture_path = save_discovery_capture(&data_directory(), "listen-editor", &capture)?;
+    Ok(json!({"events":events,"logs":logs,"capturePath":capture_path}))
+}
+
+fn run_verified_discovery_write_inner(
+    address: [u8; 4],
+    value: u8,
+    editor_mode: bool,
+) -> Result<Value, String> {
+    if address.iter().any(|byte| *byte > 0x7f) || value > 0x7f {
+        return Err("Discovery address and value must contain only 7-bit bytes.".into());
+    }
+    let (inputs, outputs) = midi::ports()?;
+    let input = inputs
+        .iter()
+        .find(|port| port.normal)
+        .map(|port| port.index)
+        .ok_or("No normal ME-80 MIDI input was found.")?;
+    let output = outputs
+        .iter()
+        .find(|port| port.normal)
+        .map(|port| port.index)
+        .ok_or("No normal ME-80 MIDI output was found.")?;
+    let mut midi = Session::open(input, output)?;
+    midi.begin_operation();
+    if editor_mode {
+        midi.enable_editor_mode()?;
+        thread::sleep(Duration::from_millis(100));
+    }
+    let request = sysex::rq1(address, [0, 0, 0, 1]);
+    let original = midi.request_raw(&request, address)?;
+    if original.data.len() != 1 {
+        return Err(format!(
+            "Expected one original byte at the write address, received {}.",
+            original.data.len()
+        ));
+    }
+    let original_value = original.data[0];
+    midi.send(&sysex::dt1(address, &[value])?)?;
+    thread::sleep(Duration::from_millis(250));
+    let verified = midi.request_raw(&request, address)?;
+    let verified_value = (verified.data.len() == 1).then(|| verified.data[0]);
+    let logs = midi.take_logs();
+    let capture = json!({
+        "schema": "me80-system-discovery-v1",
+        "device": "ME-80",
+        "createdAt": Utc::now().to_rfc3339(),
+        "kind": if editor_mode { "verified-dt1-write-editor-mode" } else { "verified-dt1-write" },
+        "editorMode": editor_mode,
+        "address": address,
+        "originalValue": original_value,
+        "writtenValue": value,
+        "verifiedReadback": verified_value,
+        "logs": logs
+    });
+    let capture_path = save_discovery_capture(
+        &data_directory(),
+        if editor_mode { "write-editor" } else { "write" },
+        &capture,
+    )?;
+    if verified_value != Some(value) {
+        return Err(format!(
+            "Written value was not verified. Evidence: {capture_path}"
+        ));
+    }
+    Ok(json!({
+        "address": address,
+        "originalValue": original_value,
+        "writtenValue": value,
+        "verifiedReadback": verified_value,
+        "editorMode": editor_mode,
+        "capturePath": capture_path,
+        "logs": logs
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1462,5 +1908,17 @@ mod tests {
             {"field":"amp1","value":20}
         ]}))
         .is_err());
+    }
+    #[test]
+    fn confirmed_system_knob_values_decode() {
+        let mut data = [0u8; 16];
+        assert_eq!(system_settings_view(&data).unwrap()["knobOperation"], "direct");
+        data[0] = 1;
+        assert_eq!(system_settings_view(&data).unwrap()["knobOperation"], "catch");
+        data[0] = 2;
+        assert!(system_settings_view(&data).is_err());
+        for length in [0, 1, 15, 17] {
+            assert!(system_settings_view(&vec![0; length]).is_err());
+        }
     }
 }

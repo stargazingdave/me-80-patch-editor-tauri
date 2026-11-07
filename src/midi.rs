@@ -174,7 +174,29 @@ impl Session {
         Ok(events)
     }
 
-    pub fn request(&mut self, request: &[u8], address: [u8; 4]) -> Result<Dt1, String> {
+    pub fn listen_dt1(&mut self, duration: Duration) -> Result<Vec<Dt1>, String> {
+        let start = Instant::now();
+        let mut events = Vec::new();
+        while let Some(remaining) = duration.checked_sub(start.elapsed()) {
+            let message = match self.rx.recv_timeout(remaining) {
+                Ok(message) => message,
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("ME-80 MIDI input disconnected while listening.".into())
+                }
+            };
+            self.record("RX", &message);
+            let Some(parsed) = parse_dt1(&message)? else {
+                continue;
+            };
+            if parsed.device_id == DEVICE_ID && parsed.checksum_valid {
+                events.push(parsed);
+            }
+        }
+        Ok(events)
+    }
+
+    pub fn request_raw(&mut self, request: &[u8], address: [u8; 4]) -> Result<Dt1, String> {
         self.send(request)?;
         let start = Instant::now();
         loop {
@@ -203,14 +225,19 @@ impl Session {
             if !parsed.checksum_valid {
                 return Err("ME-80 response checksum was invalid.".into());
             }
-            if parsed.data.len() != PATCH_SIZE {
-                return Err(format!(
-                    "ME-80 response contained {}, not 71, patch bytes.",
-                    parsed.data.len()
-                ));
-            }
             return Ok(parsed);
         }
+    }
+
+    pub fn request(&mut self, request: &[u8], address: [u8; 4]) -> Result<Dt1, String> {
+        let parsed = self.request_raw(request, address)?;
+        if parsed.data.len() != PATCH_SIZE {
+            return Err(format!(
+                "ME-80 response contained {}, not 71, patch bytes.",
+                parsed.data.len()
+            ));
+        }
+        Ok(parsed)
     }
 }
 
