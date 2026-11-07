@@ -73,3 +73,8 @@ update it only after reviewing the shared tooling. CI release version comes from
 Cargo.toml and must agree with tauri.conf.json. Earlier published versions remain
 available. Update RELEASE-NOTES.md for each new release. Physical pedal checks
 remain separate from automated tests.
+
+The developer-only discovery binary is excluded from regular installers. Build
+it explicitly with `cargo build --features discovery-cli --bin me80-discovery`.
+The release guard checks the generated NSIS file list as well as binary hashes;
+its cleanup hook removes the development executable accidentally bundled in 0.2.0.

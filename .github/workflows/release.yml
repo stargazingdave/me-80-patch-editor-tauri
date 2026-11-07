@@ -30,7 +30,9 @@ jobs:
       - name: Install pinned Rust
         run: rustup default 1.98.0
       - name: Test Rust and discovery CLI
-        run: cargo test --locked --all-targets
+        run: cargo test --locked --all-targets --features discovery-cli
+      - name: Test installer publication guard
+        run: python -B -m unittest discover -s scripts -p test_installer_audit.py
       - name: Install pinned Tauri CLI
         run: npm install --global @tauri-apps/cli@2.11.4
       - name: Build Windows x64 NSIS installer
@@ -62,7 +64,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: stargazingdave/spaceship
-          ref: 5a249d21d6de39a8d5fc6edabf19854566d85ba8
+          ref: de6f797c57ae6ab8855fb04b97aed09950737abf
           ssh-key: ${{ secrets.DISTRIBUTION_TOOLS_SSH_KEY }}
           persist-credentials: false
           path: tooling

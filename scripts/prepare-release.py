@@ -2,6 +2,7 @@
 import hashlib,json,os,shutil,struct,subprocess,tomllib
 from datetime import datetime,timezone
 from pathlib import Path
+from installer_audit import audit_nsis
 root=Path(__file__).resolve().parents[1]
 version=tomllib.loads((root/'Cargo.toml').read_text())['package']['version']
 config=json.loads((root/'tauri.conf.json').read_text())
@@ -11,6 +12,8 @@ if revision!=os.environ['GITHUB_SHA']:raise ValueError('Source revision mismatch
 # Tauri normalizes Cargo.toml line endings on Windows. Compare actual Git
 # content, including staged changes, rather than the cached status flag.
 if subprocess.run(['git','diff','--quiet','--no-ext-diff','HEAD','--'],cwd=root).returncode != 0:raise ValueError('Tracked source content changed during validation')
+nsis=root/'target/x86_64-pc-windows-msvc/release/nsis/x64/installer.nsi'
+audit_nsis(nsis.read_text(encoding='utf-8'),version)
 filename=f'me-80-patch-editor_{version}_x64-setup.exe'
 source=root/'target/release/bundle/nsis'/filename
 # NSIS must be a real PE executable, not a missing or renamed artifact.
