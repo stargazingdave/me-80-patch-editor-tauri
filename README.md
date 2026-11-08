@@ -78,3 +78,15 @@ The developer-only discovery binary is excluded from regular installers. Build
 it explicitly with `cargo build --features discovery-cli --bin me80-discovery`.
 The release guard checks the generated NSIS file list as well as binary hashes;
 its cleanup hook removes the development executable accidentally bundled in 0.2.0.
+
+
+## Download-page copy
+
+RELEASE-NOTES.md is end-user text published verbatim to GitHub and the download
+manifest. Describe current features and installation requirements. The download
+page already provides the product name, description, version, date and files.
+Treat this launch as the first real release: omit development-build comparisons,
+withdrawal/migration stories, internal validation, build tools and developer-only
+utilities. Keep engineering details in developer documentation instead.
+Product name and description come from distribution-product.json. Keep the
+shared publisher pin current so productDescription survives manifest parsing.

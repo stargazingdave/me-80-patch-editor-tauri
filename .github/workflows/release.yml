@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: stargazingdave/spaceship
-          ref: de6f797c57ae6ab8855fb04b97aed09950737abf
+          ref: cb7aaf85ba2a876b5d05f8d8b5471c14786939c6
           ssh-key: ${{ secrets.DISTRIBUTION_TOOLS_SSH_KEY }}
           persist-credentials: false
           path: tooling

@@ -24,9 +24,11 @@ with source.open('rb') as f:
 out=root/'release-approved';out.mkdir(exist_ok=True)
 shutil.copyfile(source,out/filename)
 digest=hashlib.sha256((out/filename).read_bytes()).hexdigest()
-notes=(root/'RELEASE-NOTES.md').read_text()
+notes=(root/'RELEASE-NOTES.md').read_text(encoding='utf-8').strip()
+product=json.loads((root/'distribution-product.json').read_text(encoding='utf-8'))
+if product['id']!='me-80-patch-editor' or not product['description'].strip() or not notes:raise ValueError('Product metadata and user release notes required')
 release_id='me-80-patch-editor-v'+version.replace('.','-')
-bundle={'projectId':'me-80-patch-editor','repository':'stargazingdave/me-80-patch-editor-tauri','githubRelease':{'tag':'v'+version,'commit':revision,'name':'ME-80 Patch Editor '+version+' beta','notes':notes,'prerelease':True},'releases':[{'id':release_id,'productId':'me-80-patch-editor','productName':'ME-80 Patch Editor','version':version,'releasedAt':datetime.now(timezone.utc).isoformat(),'channel':'beta','notes':notes,'status':'active','downloads':[{'id':release_id+'-windows-x64','os':'windows','architecture':'x64','format':'nsis','filename':filename,'size':source.stat().st_size,'sha256':digest,'access':'public'}]}]}
-(out/'bundle.json').write_text(json.dumps(bundle,indent=2))
+bundle={'projectId':'me-80-patch-editor','repository':'stargazingdave/me-80-patch-editor-tauri','githubRelease':{'tag':'v'+version,'commit':revision,'name':'ME-80 Patch Editor '+version+' beta','notes':notes,'prerelease':True},'releases':[{'id':release_id,'productId':'me-80-patch-editor','productName':product['name'],'productDescription':product['description'],'version':version,'releasedAt':datetime.now(timezone.utc).isoformat(),'channel':'beta','notes':notes,'status':'active','downloads':[{'id':release_id+'-windows-x64','os':'windows','architecture':'x64','format':'nsis','filename':filename,'size':source.stat().st_size,'sha256':digest,'access':'public'}]}]}
+(out/'bundle.json').write_text(json.dumps(bundle,indent=2),encoding='utf-8')
 (out/(filename+'.sha256')).write_text(digest+'  '+filename+'\n')
 print('Prepared '+filename+' from '+revision)
